@@ -1,0 +1,51 @@
+{
+  "name": "earningslens",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "tsx watch src/backend/server.ts",
+    "dev:frontend": "next dev -p 8000",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "db:init": "tsx scripts/init-db.ts",
+    "ingest": "tsx scripts/bulk-ingest.ts"
+  },
+  "dependencies": {
+    "@clerk/nextjs": "^5.3.0",
+    "@huggingface/transformers": "^4.2.0",
+    "@langchain/core": "^0.2.27",
+    "@langchain/groq": "^0.0.14",
+    "@libsql/client": "^0.17.3",
+    "@qdrant/js-client-rest": "^1.9.0",
+    "axios": "^1.7.7",
+    "cheerio": "^1.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
+    "express": "^4.19.2",
+    "groq-sdk": "^0.7.0",
+    "langchain": "^0.2.17",
+    "next": "^14.2.0",
+    "pdf-parse": "^1.1.1",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "recharts": "^2.12.7"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.0",
+    "@types/pdf-parse": "^1.1.4",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "autoprefixer": "^10.4.19",
+    "concurrently": "^8.2.2",
+    "eslint": "^8.57.0",
+    "eslint-config-next": "^14.2.0",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.4",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.0"
+  }
+}

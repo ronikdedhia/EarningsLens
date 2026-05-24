@@ -27,6 +27,9 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
+# backend build output
+dist/
+
 # os
 .DS_Store
 *.pem

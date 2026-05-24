@@ -28,9 +28,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <ClerkProvider>
       <html lang="en" className={`${inter.variable} ${dmSerif.variable}`}>
-        <body className="min-h-screen antialiased">
+        <body className="min-h-screen antialiased flex">
           <NavBar />
-          <main className="max-w-6xl mx-auto px-4 py-8">{children}</main>
+          <main className="flex-1 min-w-0 ml-56 px-8 py-8">
+            <div className="max-w-5xl mx-auto">{children}</div>
+          </main>
         </body>
       </html>
     </ClerkProvider>

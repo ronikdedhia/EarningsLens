@@ -128,17 +128,21 @@ export async function listCompaniesWithStatus(): Promise<CompanyStatus[]> {
 }
 
 export async function getSystemStats(): Promise<{
-  companies: number; ingested: number; pending: number;
+  companies: number; ingested: number; pending: number; sectors: number; aiInsights: number;
 }> {
-  const [compRes, ingRes, pendRes] = await Promise.all([
+  const [compRes, ingRes, pendRes, sectorRes, insightRes] = await Promise.all([
     db().execute('SELECT COUNT(*) AS n FROM companies'),
     db().execute("SELECT COUNT(*) AS n FROM quarter_index WHERE ingested_at != ''"),
     db().execute("SELECT COUNT(*) AS n FROM quarter_index WHERE pdf_url != '' AND ingested_at = ''"),
+    db().execute('SELECT COUNT(DISTINCT sector) AS n FROM companies'),
+    db().execute('SELECT COUNT(*) AS n FROM insights'),
   ]);
   return {
-    companies: (compRes.rows[0]?.n as number) ?? 0,
-    ingested:  (ingRes.rows[0]?.n  as number) ?? 0,
-    pending:   (pendRes.rows[0]?.n as number) ?? 0,
+    companies:  (compRes.rows[0]?.n    as number) ?? 0,
+    ingested:   (ingRes.rows[0]?.n     as number) ?? 0,
+    pending:    (pendRes.rows[0]?.n    as number) ?? 0,
+    sectors:    (sectorRes.rows[0]?.n  as number) ?? 0,
+    aiInsights: (insightRes.rows[0]?.n as number) ?? 0,
   };
 }
 

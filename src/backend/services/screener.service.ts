@@ -47,6 +47,26 @@ function normalizeUrl(href: string, base: string): string {
   return resolved;
 }
 
+const SCREENER_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.9',
+  Referer: 'https://www.screener.in/',
+};
+
+async function fetchPageHtml(url: string): Promise<string> {
+  if (process.env.FIRECRAWL_API_KEY) {
+    const res = await axios.post<{ success: boolean; data: { html: string } }>(
+      'https://api.firecrawl.dev/v1/scrape',
+      { url, formats: ['html'] },
+      { headers: { Authorization: `Bearer ${process.env.FIRECRAWL_API_KEY}` }, timeout: 30_000 },
+    );
+    if (res.data?.success && res.data.data?.html) return res.data.data.html;
+  }
+  const { data } = await axios.get<string>(url, { headers: SCREENER_HEADERS, timeout: 20_000 });
+  return data;
+}
+
 function inferSector(name: string): string {
   const n = name.toLowerCase();
   if (/bank/.test(n)) return 'Banking';
@@ -221,17 +241,10 @@ export async function getCompanyInfoFromScreener(ticker: string): Promise<{ name
     `${SCREENER_BASE}/${screenerTicker}/consolidated/`,
     `${SCREENER_BASE}/${screenerTicker}/`,
   ];
-  const headers = {
-    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.9',
-    Referer: 'https://www.screener.in/',
-  };
-
   for (const url of urls) {
     try {
-      const { data } = await axios.get<string>(url, { headers, timeout: 15_000 });
-      const $ = cheerio.load(data);
+      const html = await fetchPageHtml(url);
+      const $ = cheerio.load(html);
       const name = $('h1').first().text().trim().replace(/\s+/g, ' ');
       if (name && name.length > 2) {
         return { name, sector: inferSector(name) };
@@ -252,28 +265,10 @@ export async function discoverPdfUrlFromScreener(
 
   let html: string;
   try {
-    const { data } = await axios.get<string>(pageUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        Referer: 'https://www.screener.in/',
-      },
-      timeout: 20_000,
-    });
-    html = data;
+    html = await fetchPageHtml(pageUrl);
   } catch {
     // Try without /consolidated/ (some companies only have standalone page)
-    const { data } = await axios.get<string>(`${SCREENER_BASE}/${screenerTicker}/`, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        Referer: 'https://www.screener.in/',
-      },
-      timeout: 20_000,
-    });
-    html = data;
+    html = await fetchPageHtml(`${SCREENER_BASE}/${screenerTicker}/`);
   }
 
   const $ = cheerio.load(html);

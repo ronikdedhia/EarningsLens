@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { Client } from '@upstash/qstash';
 import { RecursiveCharacterTextSplitter } from 'langchain/text_splitter';
 import { embedBatch } from '../services/embedding.service';
 import { upsertChunks, ensureCollection, type ChunkPayload } from '../services/qdrant.service';
@@ -13,17 +14,21 @@ import { scanAndSaveRedFlags } from '../services/redflags.service';
 const router = Router();
 const splitter = new RecursiveCharacterTextSplitter({ chunkSize: 512, chunkOverlap: 64 });
 
-router.post('/', async (req: Request, res: Response) => {
-  const { ticker, quarter, fiscalYear, publishedAt, source, transcript } = req.body;
+interface IngestBody {
+  ticker: string;
+  quarter: string;
+  fiscalYear: number;
+  publishedAt?: string;
+  source?: string;
+  transcript: string;
+}
 
-  if (!ticker || !quarter || !fiscalYear || !transcript) {
-    return res.status(400).json({ error: 'ticker, quarter, fiscalYear, and transcript are required' });
-  }
-
+async function runIngestion(body: IngestBody) {
+  const { ticker, quarter, fiscalYear, publishedAt, source, transcript } = body;
   const t = ticker.toUpperCase();
 
   if (await isQuarterIngested(t, quarter)) {
-    return res.json({ message: `${t} ${quarter} already ingested`, skipped: true });
+    return { message: `${t} ${quarter} already ingested`, skipped: true };
   }
 
   await ensureCollection();
@@ -47,7 +52,7 @@ router.post('/', async (req: Request, res: Response) => {
           speakerRole: turn.role as ChunkPayload['speakerRole'],
           speakerName: turn.speaker,
           topic: turn.topic,
-          text, source, publishedAt,
+          text, source: source ?? '', publishedAt: publishedAt ?? '',
         } satisfies ChunkPayload,
       })
     );
@@ -65,24 +70,59 @@ router.post('/', async (req: Request, res: Response) => {
   await upsertChunks(points);
   await Promise.all([markIngested(t, quarter), ...sentimentWrites]);
 
-  // Fire-and-forget: extract promises, resolve prior promises, scan red flags
   Promise.all([
     extractPromisesForQuarter(t, quarter),
     resolvePromisesForQuarter(t, quarter),
     scanAndSaveRedFlags(t, quarter),
   ]).catch(() => {});
 
-  // Notify after commit
   const summary = `✅ *${t} ${quarter}* ingested\n${turns.length} speaker turns · ${points.length} chunks`;
   notify(summary);
   const { subject, html } = ingestionEmail(t, quarter, turns.length, points.length);
   sendEmail(subject, html).catch(() => {});
 
-  return res.json({
+  return {
     message: `${t} ${quarter}: ${turns.length} speaker turns, ${points.length} chunks ingested`,
     turns: turns.length,
     chunks: points.length,
-  });
+  };
+}
+
+// POST /api/ingest — enqueue via QStash if configured, else process synchronously
+router.post('/', async (req: Request, res: Response) => {
+  const { ticker, quarter, fiscalYear, transcript } = req.body;
+
+  if (!ticker || !quarter || !fiscalYear || !transcript) {
+    return res.status(400).json({ error: 'ticker, quarter, fiscalYear, and transcript are required' });
+  }
+
+  if (process.env.QSTASH_TOKEN && process.env.BACKEND_PUBLIC_URL) {
+    const qstash = new Client({ token: process.env.QSTASH_TOKEN });
+    await qstash.publishJSON({
+      url: `${process.env.BACKEND_PUBLIC_URL}/api/ingest/worker`,
+      body: req.body,
+    });
+    notify(`⏳ *${String(ticker).toUpperCase()} ${quarter}* queued for ingestion`);
+    return res.status(202).json({
+      message: `${String(ticker).toUpperCase()} ${quarter} queued — processing in background`,
+      queued: true,
+    });
+  }
+
+  const result = await runIngestion(req.body as IngestBody);
+  return res.json(result);
+});
+
+// POST /api/ingest/worker — called by QStash after queuing
+router.post('/worker', async (req: Request, res: Response) => {
+  const { ticker, quarter, fiscalYear, transcript } = req.body;
+
+  if (!ticker || !quarter || !fiscalYear || !transcript) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  const result = await runIngestion(req.body as IngestBody);
+  return res.json(result);
 });
 
 export { router as ingestRouter };

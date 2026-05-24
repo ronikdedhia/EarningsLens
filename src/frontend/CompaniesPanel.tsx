@@ -20,7 +20,7 @@ interface CompanyStatus {
   quarters: QuarterStatus[];
 }
 
-interface Stats { companies: number; ingested: number; pending: number }
+interface Stats { companies: number; ingested: number; pending: number; sectors: number; aiInsights: number }
 
 interface InsightRow { id: number; ticker: string; title: string; content: string; generatedAt: string }
 interface QueryLogRow { id: number; query: string; answer: string; createdAt: string }
@@ -327,23 +327,21 @@ export default function CompaniesPanel() {
     }, {} as Record<string, CompanyStatus[]>)
   ).sort(([a], [b]) => a.localeCompare(b));
 
-  const coverage = stats && (stats.ingested + stats.pending) > 0
-    ? Math.round((stats.ingested / (stats.ingested + stats.pending)) * 100)
-    : null;
-
   return (
     <div className="space-y-6">
       {/* Stats bar */}
       {stats && (
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-4 gap-3">
           {[
-            { label: 'Companies',         value: String(stats.companies),                              color: 'rgba(255,255,255,0.9)' },
-            { label: 'Quarters Processed', value: String(stats.ingested),                               color: '#34d399' },
-            { label: 'Coverage',          value: coverage !== null ? `${coverage}%` : '—',             color: coverage !== null && coverage >= 80 ? '#34d399' : '#f59e0b' },
+            { label: 'Companies',   value: String(stats.companies),  color: 'rgba(255,255,255,0.9)', sub: 'NSE tracked' },
+            { label: 'Transcripts', value: String(stats.ingested),   color: '#34d399',               sub: 'quarters ingested' },
+            { label: 'Sectors',     value: String(stats.sectors),    color: '#a78bfa',               sub: 'industries covered' },
+            { label: 'AI Insights', value: String(stats.aiInsights), color: '#f59e0b',               sub: 'generated analyses' },
           ].map(s => (
             <div key={s.label} className="glass rounded-2xl p-4 text-center">
               <div className="text-3xl font-bold" style={{ color: s.color }}>{s.value}</div>
-              <div className="text-xs mt-1 uppercase tracking-wider" style={{ color: 'rgba(255,255,255,0.35)' }}>{s.label}</div>
+              <div className="text-xs mt-1 font-medium uppercase tracking-wider" style={{ color: 'rgba(255,255,255,0.4)' }}>{s.label}</div>
+              <div className="text-[10px] mt-0.5" style={{ color: 'rgba(255,255,255,0.2)' }}>{s.sub}</div>
             </div>
           ))}
         </div>

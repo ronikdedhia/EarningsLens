@@ -1,7 +1,18 @@
-import { embedText } from '@/backend/services/embedding.service';
-import { searchChunks, type ChunkPayload, type SearchFilter } from '@/backend/services/qdrant.service';
-import { synthesize } from '@/backend/services/groq.service';
-import { scoreBatch } from '@/backend/services/sentiment.service';
+import axios from 'axios';
+import { embedText } from '../services/embedding.service';
+import { searchChunks, type ChunkPayload, type SearchFilter } from '../services/qdrant.service';
+import { synthesize } from '../services/groq.service';
+import { scoreBatch } from '../services/sentiment.service';
+
+async function rerankChunks(query: string, chunks: ChunkPayload[]): Promise<ChunkPayload[]> {
+  if (!process.env.COHERE_API_KEY || chunks.length <= 1) return chunks;
+  const res = await axios.post<{ results: Array<{ index: number }> }>(
+    'https://api.cohere.com/v2/rerank',
+    { model: 'rerank-v3.5', query, documents: chunks.map(c => c.text), top_n: chunks.length },
+    { headers: { Authorization: `Bearer ${process.env.COHERE_API_KEY}` } },
+  );
+  return res.data.results.map(r => chunks[r.index]);
+}
 
 export interface QueryOptions {
   ticker?: string;
@@ -49,11 +60,11 @@ export async function runRAGQuery(
 
   const searchResults = await searchChunks(queryVector, filter, options.topK ?? 8);
 
-  const chunks = searchResults
+  const rawChunks = searchResults
     .filter((r) => r.score > MIN_RELEVANCE_SCORE)
     .map((r) => r.payload as unknown as ChunkPayload);
 
-  if (chunks.length === 0) {
+  if (rawChunks.length === 0) {
     return {
       answer: 'No relevant transcript excerpts found for this query and filter combination.',
       citations: [],
@@ -61,6 +72,8 @@ export async function runRAGQuery(
       queryVector,
     };
   }
+
+  const chunks = await rerankChunks(query, rawChunks);
 
   const contextBlocks = chunks.map(
     (c) => `[${c.ticker} ${c.quarter} — ${c.speakerRole} ${c.speakerName}]\n${c.text}`

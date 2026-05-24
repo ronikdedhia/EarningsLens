@@ -1,6 +1,8 @@
 import * as dotenv from 'dotenv';
 import * as path from 'path';
-dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
+dotenv.config({ path: path.resolve(process.cwd(), process.env.NODE_ENV === 'production' ? '.env' : '.env.local') });
+import * as Sentry from '@sentry/node';
+Sentry.init({ dsn: process.env.SENTRY_DSN ?? '', tracesSampleRate: 0.1 });
 import express from 'express';
 import cors from 'cors';
 import { ingestRouter }    from './routes/ingest.route';
@@ -36,5 +38,7 @@ app.use('/api/sector',      sectorRouter);
 
 app.get('/health', (_, res) => res.json({ status: 'ok' }));
 
-const PORT = process.env.BACKEND_PORT ?? 3001;
+Sentry.setupExpressErrorHandler(app);
+
+const PORT = process.env.PORT ?? process.env.BACKEND_PORT ?? 3001;
 app.listen(PORT, () => console.log(`Express backend → http://localhost:${PORT}`));

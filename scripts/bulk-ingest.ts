@@ -14,6 +14,33 @@ import { promisify } from 'util';
 import pdfParse from 'pdf-parse';
 import { getPendingIngestions } from '../src/backend/services/turso.service';
 
+async function parsePdfWithLlamaParse(buffer: Buffer): Promise<string | null> {
+  if (!process.env.LLAMA_CLOUD_API_KEY) return null;
+  const form = new FormData();
+  form.append('file', new Blob([buffer], { type: 'application/pdf' }), 'transcript.pdf');
+  const uploadRes = await fetch('https://api.cloud.llamaindex.ai/api/parsing/upload', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${process.env.LLAMA_CLOUD_API_KEY}` },
+    body: form,
+  });
+  if (!uploadRes.ok) return null;
+  const { id: jobId } = await uploadRes.json() as { id: string };
+  for (let i = 0; i < 20; i++) {
+    await new Promise(r => setTimeout(r, 3000));
+    const status = await fetch(`https://api.cloud.llamaindex.ai/api/parsing/job/${jobId}`, {
+      headers: { Authorization: `Bearer ${process.env.LLAMA_CLOUD_API_KEY}` },
+    }).then(r => r.json()) as { status: string };
+    if (status.status === 'SUCCESS') {
+      const result = await fetch(`https://api.cloud.llamaindex.ai/api/parsing/job/${jobId}/result/markdown`, {
+        headers: { Authorization: `Bearer ${process.env.LLAMA_CLOUD_API_KEY}` },
+      }).then(r => r.json()) as { markdown: string };
+      return result.markdown;
+    }
+    if (status.status === 'ERROR') return null;
+  }
+  return null;
+}
+
 const execFileAsync = promisify(execFile);
 
 dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
@@ -34,6 +61,8 @@ async function fetchPdfText(url: string): Promise<string> {
   if (stdout.slice(0, 4).toString() !== '%PDF') {
     throw new Error(`Not a PDF — got: ${stdout.slice(0, 80).toString().replace(/\n/g, ' ')}`);
   }
+  const llamaText = await parsePdfWithLlamaParse(stdout);
+  if (llamaText) return llamaText;
   const { text } = await pdfParse(stdout);
   return text;
 }

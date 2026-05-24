@@ -1,28 +1,45 @@
-import { pipeline, type FeatureExtractionPipeline } from '@huggingface/transformers';
+import axios from 'axios';
 
-let _pipe: FeatureExtractionPipeline | null = null;
+const VOYAGE_API_URL = 'https://api.voyageai.com/v1/embeddings';
+const VOYAGE_MODEL = 'voyage-finance-2';
+const HF_API_URL = 'https://api-inference.huggingface.co/models/BAAI/bge-small-en-v1.5';
 
-async function getPipe(): Promise<FeatureExtractionPipeline> {
-  if (!_pipe) {
-    _pipe = await pipeline('feature-extraction', 'Xenova/bge-small-en-v1.5', {
-      dtype: 'fp32',
-    }) as FeatureExtractionPipeline;
+async function callVoyage(input: string[]): Promise<number[][]> {
+  const res = await axios.post<{ data: Array<{ embedding: number[] }> }>(
+    VOYAGE_API_URL,
+    { input, model: VOYAGE_MODEL },
+    { headers: { Authorization: `Bearer ${process.env.VOYAGE_API_KEY}` } },
+  );
+  return res.data.data.map(d => d.embedding);
+}
+
+async function callHF(inputs: string | string[]): Promise<number[][]> {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const res = await axios.post<number[] | number[][]>(
+      HF_API_URL,
+      { inputs },
+      { headers: { Authorization: `Bearer ${process.env.HUGGINGFACE_API_TOKEN}` } },
+    );
+    if (res.status === 200) {
+      const data = res.data;
+      // single input returns flat array, batch returns nested
+      return (Array.isArray(data[0]) ? data : [data]) as number[][];
+    }
+    await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
   }
-  return _pipe;
+  throw new Error('HuggingFace embedding API unavailable after retries');
 }
 
 export async function embedText(text: string): Promise<number[]> {
-  const pipe = await getPipe();
-  const output = await pipe(text, { pooling: 'mean', normalize: true });
-  return Array.from(output.data as Float32Array);
+  if (process.env.VOYAGE_API_KEY) {
+    const [embedding] = await callVoyage([text]);
+    return embedding;
+  }
+  const [embedding] = await callHF(text);
+  return embedding;
 }
 
 export async function embedBatch(texts: string[]): Promise<number[][]> {
-  const pipe = await getPipe();
-  const output = await pipe(texts, { pooling: 'mean', normalize: true });
-  const data = output.data as Float32Array;
-  const dim = data.length / texts.length;
-  return Array.from({ length: texts.length }, (_, i) =>
-    Array.from(data.slice(i * dim, (i + 1) * dim)),
-  );
+  if (process.env.VOYAGE_API_KEY) return callVoyage(texts);
+  return callHF(texts);
 }

@@ -8,7 +8,7 @@
 
 ## What It Does
 
-EarningsLens ingests BSE earnings call transcripts, embeds them locally (no API cost), and surfaces qualitative intelligence that financials alone cannot show:
+EarningsLens ingests BSE earnings call transcripts, embeds them via Voyage AI or HuggingFace, and surfaces qualitative intelligence that financials alone cannot show:
 
 | Feature | What it answers |
 |---------|----------------|
@@ -65,9 +65,9 @@ Every time a transcript is ingested, these run automatically (fire-and-forget):
 ```
 POST /api/ingest
   1. Parse speaker turns (CEO / CFO / Analyst / Other)
-  2. Chunk + embed (all-MiniLM-L6-v2, local ONNX)
+  2. Chunk (512 tokens, 64 overlap) + embed via Voyage AI or HuggingFace API
   3. Upsert to Qdrant with payload metadata
-  4. FinBERT sentiment scoring per chunk → Turso
+  4. Groq sentiment classification per chunk → Turso
   5. Extract guidance promises (CEO + CFO) → Turso
   6. Resolve pending promises from prior quarters against new transcript
   7. Scan for red flags (9-category taxonomy) → Turso
@@ -130,12 +130,13 @@ POST /api/ingest
 ### Research `/research`
 - Natural-language RAG query over all ingested transcripts
 - Filter by ticker, quarters, speaker role (CEO / CFO / Analyst)
+- Optional Cohere reranking for improved retrieval quality (if `COHERE_API_KEY` set)
 - Citations panel: source chunk, speaker, quarter, sentiment score
 - No-lookahead mode (`beforeDate`) for historical backtesting
 - Every query logged to Turso + Qdrant; Telegram + SendGrid notification
 
 ### Sentiment `/sentiment`
-- Signed FinBERT drift chart per company — positive scores above zero, negative below
+- Signed Groq-classified sentiment drift chart per company — positive scores above zero, negative below
 - Area chart with green/red gradient split at zero — actual directional movement, not flat confidence
 - Multi-ticker toggle; quarter-over-quarter trend visible at a glance
 
@@ -146,7 +147,8 @@ POST /api/ingest
 
 ### Coverage `/pipeline`
 - Add companies by NSE ticker or name (auto-discovers from Screener.in)
-- Auto-fetches BSE earnings call PDFs and queues ingestion
+- Auto-fetches BSE earnings call PDFs via Firecrawl (falls back to raw axios scraping)
+- Optional LlamaParse for PDF extraction (falls back to `pdf-parse`)
 - Free accounts: 2 companies max (tracked in `user_companies`)
 - Telegram + SendGrid notification on discovery + ingestion
 
@@ -162,7 +164,14 @@ POST /api/ingest
 
 ### Qdrant — `earnings_transcripts` collection
 
-Each ~512-token chunk becomes a 384-dim vector with payload:
+Each ~512-token chunk becomes a vector with payload. Vector dimensions depend on the embedding provider:
+
+| Provider | Model | Dimensions |
+|----------|-------|-----------|
+| Voyage AI (`VOYAGE_API_KEY` set) | `voyage-finance-2` | 1024 |
+| HuggingFace (fallback) | `BAAI/bge-small-en-v1.5` | 384 |
+
+> **Note:** switching providers requires deleting the Qdrant collection and re-ingesting all transcripts — vector dimensions are not compatible.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -182,7 +191,7 @@ Also: `query_log` collection — every RAG query as a vector for semantic dedup.
 
 **`companies`** — ticker, name, sector, bse_code  
 **`quarter_index`** — ingestion status per ticker + quarter (pdf_url, ingested_at)  
-**`sentiment_scores`** — FinBERT label + score per chunk, averaged per quarter  
+**`sentiment_scores`** — Groq-classified label + score per chunk, averaged per quarter  
 **`query_log`** — every RAG query + LLM answer + user rating  
 **`insights`** — AI-generated insight cards per ticker  
 **`management_scores`** — confidence / transparency / follow_through / composite per quarter  
@@ -225,12 +234,17 @@ Every significant event triggers Telegram + SendGrid:
 | Frontend | Next.js 14 App Router, Tailwind CSS, Recharts |
 | Auth | Clerk (`@clerk/nextjs` v5) |
 | Backend | Express.js (TypeScript) |
-| LLM | Groq (`llama-3.1-70b-versatile`) |
-| Embeddings | `Xenova/all-MiniLM-L6-v2` (local ONNX, no API cost) |
-| Sentiment | `Xenova/finbert` (local ONNX, financial domain) |
+| LLM | Groq (`llama-3.1-8b-instant` default) |
+| Embeddings | Voyage AI `voyage-finance-2` (1024-dim, primary) · HuggingFace `BAAI/bge-small-en-v1.5` (384-dim, fallback) |
+| Sentiment | Groq LLM classification (JSON-mode, financial domain) |
+| Reranking | Cohere `rerank-v3.5` (optional, RAG quality improvement) |
+| PDF Parsing | LlamaParse (optional) · `pdf-parse` (fallback) |
+| Web Scraping | Firecrawl (optional) · axios (fallback) |
 | Vector DB | Qdrant Cloud |
 | Relational DB | Turso (LibSQL / SQLite edge) |
 | Notifications | Telegram Bot API + SendGrid |
+| Error Tracking | Sentry (frontend + backend) |
+| Background Jobs | Upstash QStash (optional, async ingestion queue) |
 
 ---
 
@@ -247,7 +261,7 @@ cp .env.local.example .env.local
 # 3. Init DB (idempotent — safe to re-run)
 npm run db:init
 
-# 4. Run (frontend :3000, backend :3001)
+# 4. Run (frontend :8000, backend :3001)
 npm run dev
 ```
 
@@ -255,35 +269,100 @@ npm run dev
 
 ## Environment Variables
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `TURSO_DATABASE_URL` | ✓ | LibSQL URL (`libsql://...`) |
-| `TURSO_AUTH_TOKEN` | ✓ | Turso auth token |
-| `QDRANT_URL` | ✓ | Qdrant cluster URL |
-| `QDRANT_API_KEY` | ✓ | Qdrant API key |
-| `GROQ_API_KEY` | ✓ | Groq API key |
-| `GROQ_MODEL` | | Model ID (default: `llama-3.1-70b-versatile`) |
-| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | ✓ | Clerk publishable key |
-| `CLERK_SECRET_KEY` | ✓ | Clerk secret key |
-| `TELEGRAM_ACCESS_TOKEN` | | Bot token for notifications |
-| `TELEGRAM_CHAT_ID` | | Target chat for notifications |
-| `SENDGRID_EMAIL_API_KEY` | | SendGrid API key |
-| `SENDGRID_FROM_EMAIL` | | Sender email address |
-| `NOTIFICATION_EMAIL` | | Recipient email address |
-| `NEXT_PUBLIC_API_URL` | | Backend URL (default: `http://localhost:3001`) |
-| `BACKEND_PORT` | | Express port (default: `3001`) |
-| `FRONTEND_URL` | | CORS origin (default: `http://localhost:3000`) |
+### Required
+
+| Variable | Description |
+|----------|-------------|
+| `TURSO_DATABASE_URL` | LibSQL URL (`libsql://...`) |
+| `TURSO_AUTH_TOKEN` | Turso auth token |
+| `QDRANT_URL` | Qdrant cluster URL |
+| `QDRANT_API_KEY` | Qdrant API key |
+| `GROQ_API_KEY` | Groq API key |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk publishable key |
+| `CLERK_SECRET_KEY` | Clerk secret key |
+| `NEXT_PUBLIC_CLERK_SIGN_IN_URL` | Clerk sign-in path (set to `/sign-in`) |
+| `NEXT_PUBLIC_CLERK_SIGN_UP_URL` | Clerk sign-up path (set to `/sign-up`) |
+| `NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL` | Post sign-in redirect (set to `/`) |
+| `NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL` | Post sign-up redirect (set to `/`) |
+| `HUGGINGFACE_API_TOKEN` | HuggingFace token (embedding fallback) |
+
+### Optional — enhance features
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GROQ_MODEL` | `llama-3.1-8b-instant` | Groq model ID |
+| `VOYAGE_API_KEY` | — | Voyage AI key — enables `voyage-finance-2` embeddings (1024-dim). Requires Qdrant collection delete + full re-ingest when switching from HuggingFace. |
+| `COHERE_API_KEY` | — | Cohere key — enables reranking in RAG. Silently skipped if absent. |
+| `LLAMA_CLOUD_API_KEY` | — | LlamaParse key — better PDF extraction. Falls back to `pdf-parse`. |
+| `FIRECRAWL_API_KEY` | — | Firecrawl key — better BSE PDF scraping. Falls back to raw axios. |
+| `TELEGRAM_ACCESS_TOKEN` | — | Telegram bot token for notifications |
+| `TELEGRAM_CHAT_ID` | — | Telegram chat/channel ID |
+| `SENDGRID_EMAIL_API_KEY` | — | SendGrid API key |
+| `SENDGRID_FROM_EMAIL` | — | Sender email address |
+| `SENDGRID_FROM_NAME` | `EarningsLens` | Sender display name |
+| `NOTIFICATION_EMAIL` | — | Recipient email address |
+| `SENTRY_DSN` | — | Sentry DSN for backend error tracking |
+| `NEXT_PUBLIC_SENTRY_DSN` | — | Sentry DSN for frontend error tracking |
+| `QSTASH_TOKEN` | — | Upstash QStash token — enables async ingestion queue. Without it, ingestion runs synchronously. |
+| `QSTASH_CURRENT_SIGNING_KEY` | — | QStash signing key (worker verification) |
+| `QSTASH_NEXT_SIGNING_KEY` | — | QStash next signing key |
+| `BACKEND_PUBLIC_URL` | — | Public URL of Express backend — required for QStash to deliver jobs in production |
+
+### Infrastructure
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NEXT_PUBLIC_API_URL` | `http://localhost:3001` | Backend URL (used by Next.js frontend) |
+| `BACKEND_PORT` | `3001` | Express port (Render sets `PORT` automatically) |
+| `FRONTEND_URL` | `http://localhost:8000` | CORS origin for Express — dev frontend runs on `:8000` |
 
 ---
 
 ## Scripts
 
 ```bash
-npm run dev      # Start frontend + backend concurrently
-npm run db:init  # Create/migrate all Turso tables (idempotent)
-npm run build    # Next.js production build
-npm run ingest   # Bulk ingest pending queue from quarter_index
+npm run dev              # Start frontend (:8000) + backend (:3001) concurrently
+npm run dev:frontend     # Next.js dev server only
+npm run dev:backend      # Express backend with hot reload only
+npm run build            # Next.js production build (Vercel)
+npm run build:backend    # Compile Express backend to dist/ (Render)
+npm run start:backend    # Run compiled backend: node dist/backend/server.js
+npm run db:init          # Create/migrate all Turso tables (idempotent)
+npm run ingest           # Bulk ingest pending queue from quarter_index
 ```
+
+---
+
+## Deployment
+
+### Frontend — Vercel
+
+1. Import repo on [vercel.com](https://vercel.com) — Next.js auto-detected
+2. Add environment variables:
+   ```
+   NEXT_PUBLIC_API_URL=https://your-backend.onrender.com
+   NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_live_...
+   CLERK_SECRET_KEY=sk_live_...
+   NEXT_PUBLIC_CLERK_SIGN_IN_URL=/sign-in
+   NEXT_PUBLIC_CLERK_SIGN_UP_URL=/sign-up
+   NEXT_PUBLIC_SENTRY_DSN=https://...
+   ```
+3. Deploy — Vercel gives you `earningslens.vercel.app`
+
+### Backend — Render
+
+1. New Web Service → connect repo
+2. **Build command:** `npm ci && npm run build:backend`
+3. **Start command:** `node dist/backend/server.js`
+4. Add environment variables (all required + optional keys, plus):
+   ```
+   NODE_ENV=production
+   FRONTEND_URL=https://earningslens.vercel.app
+   BACKEND_PUBLIC_URL=https://your-backend.onrender.com
+   ```
+5. After first deploy, update `FRONTEND_URL` on Render to match your actual Vercel URL
+
+> Render free tier sleeps after 15 min idle (~30s cold start). Upgrade to Starter ($7/mo) for always-on.
 
 ---
 
@@ -294,6 +373,7 @@ npm run ingest   # Bulk ingest pending queue from quarter_index
 | GET | `/api/companies` | All companies with quarter status + stats |
 | POST | `/api/companies/add-and-discover` | Add company + auto-fetch PDFs |
 | POST | `/api/ingest` | Ingest transcript text for a quarter |
+| POST | `/api/ingest/worker` | QStash worker endpoint (async ingestion) |
 | POST | `/api/query` | RAG query (answer + citations + sentiment) |
 | GET | `/api/sentiment?ticker=` | Sentiment history per ticker |
 | GET | `/api/management?ticker=` | Management quality scores |

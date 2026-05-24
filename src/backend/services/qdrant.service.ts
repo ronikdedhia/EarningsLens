@@ -120,7 +120,7 @@ export async function upsertQueryLog(
   });
 }
 
-export async function ensureCollection(vectorSize = 384) {
+export async function ensureCollection(vectorSize = 1024) {
   const { collections } = await client().getCollections();
   const exists = collections.some((c) => c.name === COLLECTION);
 

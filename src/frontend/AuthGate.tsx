@@ -10,6 +10,9 @@ interface Props {
 }
 
 export default function AuthGate({ children, feature, description }: Props) {
+  // DEV BYPASS — skip auth on localhost so company network blocking doesn't block dev work
+  if (process.env.NODE_ENV === 'development') return <>{children}</>;
+
   const { isSignedIn, isLoaded } = useUser();
   const pathname = usePathname();
 

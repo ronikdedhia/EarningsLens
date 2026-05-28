@@ -1,21 +1,21 @@
-const API_KEY    = process.env.SENDGRID_EMAIL_API_KEY;
-const FROM_EMAIL = process.env.SENDGRID_FROM_EMAIL ?? 'noreply@earningslens.app';
-const FROM_NAME  = process.env.SENDGRID_FROM_NAME  ?? 'EarningsLens';
+const API_KEY    = process.env.BREVO_API_KEY;
+const FROM_EMAIL = process.env.BREVO_FROM_EMAIL ?? 'noreply@earningslens.app';
+const FROM_NAME  = process.env.BREVO_FROM_NAME  ?? 'EarningsLens';
 const TO_EMAIL   = process.env.NOTIFICATION_EMAIL;
 
 export async function sendEmail(subject: string, html: string): Promise<void> {
   if (!API_KEY || !TO_EMAIL) return;
-  await fetch('https://api.sendgrid.com/v3/mail/send', {
+  await fetch('https://api.brevo.com/v3/smtp/email', {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${API_KEY}`,
+      'api-key': API_KEY,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      personalizations: [{ to: [{ email: TO_EMAIL }] }],
-      from: { email: FROM_EMAIL, name: FROM_NAME },
+      sender: { email: FROM_EMAIL, name: FROM_NAME },
+      to: [{ email: TO_EMAIL }],
       subject,
-      content: [{ type: 'text/html', value: html }],
+      htmlContent: html,
     }),
   });
 }

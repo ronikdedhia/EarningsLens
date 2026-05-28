@@ -1,0 +1,59 @@
+services:
+  - type: web
+    name: earningslens-backend
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build:backend
+    startCommand: npm run start:backend
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      - key: FRONTEND_URL
+        sync: false        # set in Render dashboard → your Vercel URL
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: llama-3.1-8b-instant
+      - key: HUGGINGFACE_API_TOKEN
+        sync: false
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
+      - key: TELEGRAM_ACCESS_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: BREVO_API_KEY
+        sync: false
+      - key: BREVO_FROM_EMAIL
+        value: noreply@earningslens.app
+      - key: BREVO_FROM_NAME
+        value: EarningsLens
+      - key: NOTIFICATION_EMAIL
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+      - key: QSTASH_TOKEN
+        sync: false
+      - key: QSTASH_CURRENT_SIGNING_KEY
+        sync: false
+      - key: QSTASH_NEXT_SIGNING_KEY
+        sync: false
+      - key: BACKEND_PUBLIC_URL
+        sync: false        # set to your Render service URL after first deploy
+      - key: VOYAGE_API_KEY
+        sync: false
+      - key: COHERE_API_KEY
+        sync: false
+      - key: LLAMA_CLOUD_API_KEY
+        sync: false
+      - key: FIRECRAWL_API_KEY
+        sync: false

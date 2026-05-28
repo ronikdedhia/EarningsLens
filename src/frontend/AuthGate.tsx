@@ -54,7 +54,7 @@ export default function AuthGate({ children, feature, description }: Props) {
               fontFamily:            'var(--font-inter), system-ui, sans-serif',
               fontFamilyButtons:     'var(--font-inter), system-ui, sans-serif',
               fontSize:              '14px',
-              fontWeight:            { normal: 400, medium: 500, semibold: 600, bold: 700 },
+              fontWeight:            { normal: 400, medium: 500, bold: 700 },
               colorPrimary:          '#f59e0b',
               colorBackground:       '#0b0d18',
               colorText:             'rgba(255,255,255,0.86)',

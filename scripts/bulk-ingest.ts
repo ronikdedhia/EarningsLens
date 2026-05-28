@@ -17,7 +17,7 @@ import { getPendingIngestions } from '../src/backend/services/turso.service';
 async function parsePdfWithLlamaParse(buffer: Buffer): Promise<string | null> {
   if (!process.env.LLAMA_CLOUD_API_KEY) return null;
   const form = new FormData();
-  form.append('file', new Blob([buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)], { type: 'application/pdf' }), 'transcript.pdf');
+  form.append('file', new Blob([new Uint8Array(buffer)], { type: 'application/pdf' }), 'transcript.pdf');
   const uploadRes = await fetch('https://api.cloud.llamaindex.ai/api/parsing/upload', {
     method: 'POST',
     headers: { Authorization: `Bearer ${process.env.LLAMA_CLOUD_API_KEY}` },

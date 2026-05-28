@@ -3,7 +3,7 @@ services:
     name: earningslens-backend
     runtime: node
     plan: free
-    buildCommand: npm install && npm run build:backend
+    buildCommand: npm install --include=dev && npm run build:backend
     startCommand: npm run start:backend
     healthCheckPath: /health
     envVars:

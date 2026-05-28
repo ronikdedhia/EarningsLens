@@ -17,6 +17,7 @@ import { promisesRouter }    from './routes/promises.route';
 import { redflagsRouter }   from './routes/redflags.route';
 import { diffRouter }       from './routes/diff.route';
 import { sectorRouter }     from './routes/sector.route';
+import { keepaliveRouter, registerKeepaliveSchedule } from './routes/keepalive.route';
 
 const app = express();
 
@@ -35,10 +36,14 @@ app.use('/api/promises',    promisesRouter);
 app.use('/api/redflags',    redflagsRouter);
 app.use('/api/diff',        diffRouter);
 app.use('/api/sector',      sectorRouter);
+app.use('/api/keepalive',   keepaliveRouter);
 
 app.get('/health', (_, res) => res.json({ status: 'ok' }));
 
 Sentry.setupExpressErrorHandler(app);
 
 const PORT = process.env.PORT ?? process.env.BACKEND_PORT ?? 3001;
-app.listen(PORT, () => console.log(`Express backend → http://localhost:${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Express backend → http://localhost:${PORT}`);
+  registerKeepaliveSchedule().catch(console.error);
+});

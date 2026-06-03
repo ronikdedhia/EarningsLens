@@ -5,6 +5,7 @@ import * as Sentry from '@sentry/node';
 Sentry.init({ dsn: process.env.SENTRY_DSN ?? '', tracesSampleRate: 0.1 });
 import express from 'express';
 import cors from 'cors';
+import cron from 'node-cron';
 import { ingestRouter }    from './routes/ingest.route';
 import { queryRouter }     from './routes/query.route';
 import { sentimentRouter } from './routes/sentiment.route';
@@ -18,6 +19,8 @@ import { redflagsRouter }   from './routes/redflags.route';
 import { diffRouter }       from './routes/diff.route';
 import { sectorRouter }     from './routes/sector.route';
 import { keepaliveRouter, registerKeepaliveSchedule } from './routes/keepalive.route';
+import { notify } from './services/telegram.service';
+import { getSystemStats, getTodayQueryCount } from './services/turso.service';
 
 const app = express();
 
@@ -42,8 +45,28 @@ app.get('/health', (_, res) => res.json({ status: 'ok' }));
 
 Sentry.setupExpressErrorHandler(app);
 
+async function sendDailyReport() {
+  try {
+    const [stats, todayQueries] = await Promise.all([getSystemStats(), getTodayQueryCount()]);
+    const date = new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric' });
+    notify(
+      `📊 *EarningsLens Daily Report — ${date}*\n\n` +
+      `🏢 Companies tracked: *${stats.companies}* (${stats.sectors} sectors)\n` +
+      `📄 Transcripts ingested: *${stats.ingested}* · pending: ${stats.pending}\n` +
+      `🧠 AI Insights stored: *${stats.aiInsights}*\n` +
+      `🔎 Queries today: *${todayQueries}*\n\n` +
+      `✅ Server is alive and running`
+    );
+  } catch (err) {
+    notify(`⚠️ *EarningsLens* daily report failed: \`${String(err).slice(0, 200)}\``);
+  }
+}
+
 const PORT = process.env.PORT ?? process.env.BACKEND_PORT ?? 3001;
 app.listen(PORT, () => {
   console.log(`Express backend → http://localhost:${PORT}`);
   registerKeepaliveSchedule().catch(console.error);
+  // Daily health report at 11:00 IST (05:30 UTC)
+  cron.schedule('30 5 * * *', sendDailyReport, { timezone: 'UTC' });
+  console.log('[cron] Daily Telegram report scheduled at 08:00 IST');
 });

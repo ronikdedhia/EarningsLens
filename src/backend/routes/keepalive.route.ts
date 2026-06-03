@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { Client } from '@upstash/qstash';
 import { QdrantClient } from '@qdrant/js-client-rest';
+import { notify } from '../services/telegram.service';
 
 export const keepaliveRouter = Router();
 
@@ -13,6 +14,7 @@ keepaliveRouter.post('/ping', async (_, res) => {
     const result = await qdrant.getCollections();
     res.json({ status: 'ok', collections: result.collections.length });
   } catch (err) {
+    notify(`⚠️ *EarningsLens keepalive FAILED*\n\`${String(err).slice(0, 200)}\``);
     res.status(500).json({ status: 'error', error: String(err) });
   }
 });
@@ -31,7 +33,7 @@ export async function registerKeepaliveSchedule() {
 
   await qstash.schedules.create({
     destination,
-    cron: '0 9 */3 * *', // every 3 days at 09:00 UTC
+    cron: '*/14 * * * *', // every 14 min — keeps Render free tier awake
   });
   console.log('[keepalive] QStash schedule registered →', destination);
 }

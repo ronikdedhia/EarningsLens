@@ -146,6 +146,15 @@ export async function getSystemStats(): Promise<{
   };
 }
 
+export async function getTodayQueryCount(): Promise<number> {
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const { rows } = await db().execute({
+    sql: "SELECT COUNT(*) AS n FROM query_log WHERE created_at >= ?",
+    args: [`${today}T00:00:00.000Z`],
+  });
+  return (rows[0]?.n as number) ?? 0;
+}
+
 // ── Quarter index ─────────────────────────────────────────────────────────────
 
 export async function isQuarterIngested(ticker: string, quarter: string): Promise<boolean> {

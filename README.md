@@ -1,5 +1,7 @@
 # EarningsLens
 
+**Live:** https://earnings-lens.vercel.app/
+
 > AI-powered qualitative earnings call analysis for Indian NSE equities. The layer between raw transcripts and expert conclusions — a category that doesn't exist at any price point in India.
 
 "Robust demand" → "cautious optimism" → earnings miss. EarningsLens catches the language shift 1–2 quarters early.

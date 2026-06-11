@@ -16,7 +16,8 @@ const NAV: NavItem[] = [
   { href: '/promises',   label: 'Promises',     icon: '◎', requiresAuth: true  },
   { href: '/diff',       label: 'Diff',         icon: '⟺', requiresAuth: true  },
   { href: '/redflags',   label: 'Red Flags',    icon: '⚑', requiresAuth: true  },
-  { href: '/sector',     label: 'Sector Pulse', icon: '◈', requiresAuth: true  },
+  { href: '/sector',      label: 'Sector Pulse', icon: '◈', requiresAuth: true  },
+  { href: '/daily-feed',  label: 'Daily Feed',   icon: '◉', requiresAuth: true  },
 ];
 
 export default function NavBar() {

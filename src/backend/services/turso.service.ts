@@ -603,3 +603,99 @@ export async function getManagementScores(ticker: string): Promise<ManagementSco
     prevPromises: JSON.parse((r.prevPromises as string) || '[]'),
   })) as unknown as ManagementScoreRow[];
 }
+
+// ── Daily Filings ─────────────────────────────────────────────────────────────
+
+export interface FilingInsights {
+  summary:    string;
+  keyPoints:  string[];
+  sentiment:  'positive' | 'negative' | 'neutral';
+  actionable: boolean;
+  watchFor:   string;
+}
+
+export interface DailyFilingRow {
+  id:           number;
+  ticker:       string;
+  filingDate:   string;
+  category:     string;      // raw BSE category name
+  title:        string;
+  pdfUrl:       string;
+  textContent:  string;
+  importance:   number;      // 1–5
+  isImportant:  boolean;
+  filingCat:    string;      // normalised: earnings | board | investor_meet | ...
+  insights:     FilingInsights | null;
+  sentiment:    string;
+  createdAt:    string;
+}
+
+export async function isDailyFilingKnown(pdfUrl: string): Promise<boolean> {
+  const { rows } = await db().execute({
+    sql:  'SELECT 1 FROM daily_filings WHERE pdf_url = ? LIMIT 1',
+    args: [pdfUrl],
+  });
+  return rows.length > 0;
+}
+
+export async function saveDailyFiling(row: Omit<DailyFilingRow, 'id' | 'createdAt'>): Promise<number> {
+  const result = await db().execute({
+    sql: `INSERT INTO daily_filings
+          (ticker, filing_date, category, title, pdf_url, text_content,
+           importance, is_important, filing_cat, insights, sentiment)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT (pdf_url) DO UPDATE SET
+            text_content = excluded.text_content,
+            importance   = excluded.importance,
+            is_important = excluded.is_important,
+            insights     = excluded.insights,
+            sentiment    = excluded.sentiment`,
+    args: [
+      row.ticker, row.filingDate, row.category, row.title, row.pdfUrl,
+      row.textContent, row.importance, row.isImportant ? 1 : 0,
+      row.filingCat, JSON.stringify(row.insights ?? null), row.sentiment,
+    ],
+  });
+  return Number(result.lastInsertRowid);
+}
+
+export async function getDailyFilings(opts: {
+  date?:        string;
+  ticker?:      string;
+  importantOnly?: boolean;
+  limit?:       number;
+}): Promise<DailyFilingRow[]> {
+  const conditions: string[] = [];
+  const args: (string | number)[] = [];
+
+  if (opts.date)        { conditions.push('filing_date = ?'); args.push(opts.date); }
+  if (opts.ticker)      { conditions.push('ticker = ?');      args.push(opts.ticker.toUpperCase()); }
+  if (opts.importantOnly) { conditions.push('is_important = 1'); }
+
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const limit = opts.limit ?? 100;
+  args.push(limit);
+
+  const { rows } = await db().execute({
+    sql: `SELECT id, ticker, filing_date AS filingDate, category, title, pdf_url AS pdfUrl,
+                 text_content AS textContent, importance, is_important AS isImportant,
+                 filing_cat AS filingCat, insights, sentiment, created_at AS createdAt
+          FROM daily_filings ${where}
+          ORDER BY filing_date DESC, importance DESC
+          LIMIT ?`,
+    args,
+  });
+
+  return rows.map(r => ({
+    ...r,
+    isImportant: r.isImportant === 1,
+    insights:    r.insights ? JSON.parse(r.insights as string) : null,
+  })) as unknown as DailyFilingRow[];
+}
+
+export async function getLatestFilingDate(): Promise<string | null> {
+  const { rows } = await db().execute(
+    'SELECT MAX(filing_date) AS d FROM daily_filings'
+  );
+  return (rows[0]?.d as string) ?? null;
+}

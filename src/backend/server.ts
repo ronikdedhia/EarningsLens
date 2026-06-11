@@ -18,7 +18,9 @@ import { promisesRouter }    from './routes/promises.route';
 import { redflagsRouter }   from './routes/redflags.route';
 import { diffRouter }       from './routes/diff.route';
 import { sectorRouter }     from './routes/sector.route';
-import { keepaliveRouter, registerKeepaliveSchedule, registerDailyReportSchedule, registerRefreshSchedule, setDailyReportHandler } from './routes/keepalive.route';
+import { keepaliveRouter, registerKeepaliveSchedule, registerDailyReportSchedule, registerDailyFilingsSchedule, registerRefreshSchedule, setDailyReportHandler } from './routes/keepalive.route';
+import { dailyFilingsRouter } from './routes/daily-filings.route';
+import { runDailyFilingsScrape } from './graphs/daily-filings.graph';
 import { notify } from './services/telegram.service';
 import { getSystemStats, getTodayQueryCount } from './services/turso.service';
 
@@ -39,7 +41,8 @@ app.use('/api/promises',    promisesRouter);
 app.use('/api/redflags',    redflagsRouter);
 app.use('/api/diff',        diffRouter);
 app.use('/api/sector',      sectorRouter);
-app.use('/api/keepalive',   keepaliveRouter);
+app.use('/api/keepalive',      keepaliveRouter);
+app.use('/api/daily-filings', dailyFilingsRouter);
 
 app.get('/health', (_, res) => res.json({ status: 'ok' }));
 
@@ -76,6 +79,17 @@ app.listen(PORT, async () => {
   cron.schedule('30 8 * * *', sendDailyReport, { timezone: 'UTC' });
   console.log('[cron] Daily Telegram report scheduled at 14:00 IST');
 
+  // Daily filings scrape at 16:00 IST (10:30 UTC) — scans BSE for last 24h filings
+  cron.schedule('30 10 * * *', async () => {
+    try {
+      const { saved, important } = await runDailyFilingsScrape();
+      console.log(`[cron] Daily filings: ${saved} saved, ${important} important`);
+    } catch (err) {
+      notify(`⚠️ *EarningsLens* daily filings scrape failed: \`${String(err).slice(0, 200)}\``);
+    }
+  }, { timezone: 'UTC' });
+  console.log('[cron] Daily BSE filings scrape scheduled at 16:00 IST');
+
   // Weekly refresh — Tuesday 12:00 IST (06:30 UTC) — checks all companies for new quarters
   const refreshPort = String(PORT);
   cron.schedule('30 6 * * 2', () => {
@@ -85,5 +99,6 @@ app.listen(PORT, async () => {
   console.log('[cron] Weekly refresh scheduled at Tuesday 12:00 IST');
 
   await registerDailyReportSchedule();
+  await registerDailyFilingsSchedule();
   await registerRefreshSchedule();
 });

@@ -154,6 +154,23 @@ const CREATE_TABLES = [
     created_at          TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(ticker, quarter_promised, verbatim_quote)
   )`,
+
+  `CREATE TABLE IF NOT EXISTS daily_filings (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker       TEXT NOT NULL,
+    filing_date  TEXT NOT NULL,
+    category     TEXT NOT NULL DEFAULT '',
+    title        TEXT NOT NULL,
+    pdf_url      TEXT NOT NULL,
+    text_content TEXT NOT NULL DEFAULT '',
+    importance   INTEGER NOT NULL DEFAULT 1,
+    is_important INTEGER NOT NULL DEFAULT 0,
+    filing_cat   TEXT NOT NULL DEFAULT 'other',
+    insights     TEXT NOT NULL DEFAULT 'null',
+    sentiment    TEXT NOT NULL DEFAULT 'neutral',
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(pdf_url)
+  )`,
 ];
 
 // ── Migrations: add columns to existing tables ───────────────────────────────
@@ -179,6 +196,9 @@ const CREATE_INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_redflags_recent  ON red_flags (detected_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_promises_ticker  ON guidance_promises (ticker, quarter_promised)`,
   `CREATE INDEX IF NOT EXISTS idx_promises_pending ON guidance_promises (status) WHERE status = 'pending'`,
+  `CREATE INDEX IF NOT EXISTS idx_daily_filings_ticker_date ON daily_filings (ticker, filing_date)`,
+  `CREATE INDEX IF NOT EXISTS idx_daily_filings_date        ON daily_filings (filing_date DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_daily_filings_important   ON daily_filings (is_important, filing_date DESC)`,
 ];
 
 // ── Seed companies ────────────────────────────────────────────────────────────
@@ -214,11 +234,11 @@ async function main() {
   for (const sql of ADD_COLUMNS) {
     await runPipeline([sql], { ignoreDuplicateColumn: true });
   }
-  console.log('  ✓ pdf_url, ingested_at, bse_code (skipped if already present)');
+  console.log('  ✓ pdf_url, ingested_at, bse_code, exchange (skipped if already present)');
 
   console.log('\nCreating indexes...');
   await runPipeline(CREATE_INDEXES);
-  console.log('  ✓ indexes');
+  console.log('  ✓ indexes (daily_filings indexes included)');
 
   console.log('\nSeeding companies...');
   await runPipeline(SEED_COMPANIES);

@@ -1,91 +1,33 @@
 import { Router, Request, Response } from 'express';
 import { Client } from '@upstash/qstash';
-import { RecursiveCharacterTextSplitter } from 'langchain/text_splitter';
-import { embedBatch } from '../services/embedding.service';
-import { upsertChunks, ensureCollection, type ChunkPayload } from '../services/qdrant.service';
-import { scoreBatch } from '../services/sentiment.service';
-import { isQuarterIngested, markIngested, saveSentimentScore } from '../services/turso.service';
-import { parseSpeakers } from '../utils/speaker-parser';
+import { ingestGraph } from '../graphs/ingest.graph';
 import { notify } from '../services/telegram.service';
-import { sendEmail, ingestionEmail } from '../services/email.service';
-import { extractPromisesForQuarter, resolvePromisesForQuarter } from '../services/promises.service';
-import { scanAndSaveRedFlags } from '../services/redflags.service';
 
 const router = Router();
-const splitter = new RecursiveCharacterTextSplitter({ chunkSize: 512, chunkOverlap: 64 });
 
 interface IngestBody {
-  ticker: string;
-  quarter: string;
-  fiscalYear: number;
+  ticker:      string;
+  quarter:     string;
+  fiscalYear:  number;
   publishedAt?: string;
-  source?: string;
-  transcript: string;
+  source?:     string;
+  transcript:  string;
 }
 
 async function runIngestion(body: IngestBody) {
-  const { ticker, quarter, fiscalYear, publishedAt, source, transcript } = body;
-  const t = ticker.toUpperCase();
-
-  if (await isQuarterIngested(t, quarter)) {
-    return { message: `${t} ${quarter} already ingested`, skipped: true };
-  }
-
-  await ensureCollection();
-
-  const turns = parseSpeakers(transcript);
-  const points: Parameters<typeof upsertChunks>[0] = [];
-  const sentimentWrites: Promise<void>[] = [];
-
-  for (const turn of turns) {
-    const chunks = await splitter.splitText(turn.content);
-    if (!chunks.length) continue;
-
-    const [vectors, scores] = await Promise.all([embedBatch(chunks), scoreBatch(chunks)]);
-
-    chunks.forEach((text, i) =>
-      points.push({
-        id: crypto.randomUUID(),
-        vector: vectors[i],
-        payload: {
-          ticker: t, quarter, fiscalYear,
-          speakerRole: turn.role as ChunkPayload['speakerRole'],
-          speakerName: turn.speaker,
-          topic: turn.topic,
-          text, source: source ?? '', publishedAt: publishedAt ?? '',
-        } satisfies ChunkPayload,
-      })
-    );
-
-    const avg = scores.reduce((s, r) => s + r.score, 0) / scores.length;
-    const labelCount = scores.reduce((acc, r) => {
-      acc[r.label] = (acc[r.label] ?? 0) + 1;
-      return acc;
-    }, {} as Record<string, number>);
-    const topLabel = Object.entries(labelCount).sort((a, b) => b[1] - a[1])[0][0];
-
-    sentimentWrites.push(saveSentimentScore(t, quarter, turn.topic, topLabel, avg));
-  }
-
-  await upsertChunks(points);
-  await Promise.all([markIngested(t, quarter), ...sentimentWrites]);
-
-  Promise.all([
-    extractPromisesForQuarter(t, quarter),
-    resolvePromisesForQuarter(t, quarter),
-    scanAndSaveRedFlags(t, quarter),
-  ]).catch(() => {});
-
-  const summary = `✅ *${t} ${quarter}* ingested\n${turns.length} speaker turns · ${points.length} chunks`;
-  notify(summary);
-  const { subject, html } = ingestionEmail(t, quarter, turns.length, points.length);
-  sendEmail(subject, html).catch(() => {});
-
-  return {
-    message: `${t} ${quarter}: ${turns.length} speaker turns, ${points.length} chunks ingested`,
-    turns: turns.length,
-    chunks: points.length,
-  };
+  const state = await ingestGraph.invoke({
+    ticker:      body.ticker,
+    quarter:     body.quarter,
+    fiscalYear:  body.fiscalYear,
+    publishedAt: body.publishedAt ?? '',
+    source:      body.source ?? '',
+    transcript:  body.transcript,
+    skipped:     false,
+    points:      [],
+    turns:       0,
+    result:      { message: '' },
+  });
+  return state.result;
 }
 
 // POST /api/ingest — enqueue via QStash if configured, else process synchronously
@@ -99,13 +41,13 @@ router.post('/', async (req: Request, res: Response) => {
   if (process.env.QSTASH_TOKEN && process.env.BACKEND_PUBLIC_URL) {
     const qstash = new Client({ token: process.env.QSTASH_TOKEN });
     await qstash.publishJSON({
-      url: `${process.env.BACKEND_PUBLIC_URL}/api/ingest/worker`,
+      url:  `${process.env.BACKEND_PUBLIC_URL}/api/ingest/worker`,
       body: req.body,
     });
     notify(`⏳ *${String(ticker).toUpperCase()} ${quarter}* queued for ingestion`);
     return res.status(202).json({
       message: `${String(ticker).toUpperCase()} ${quarter} queued — processing in background`,
-      queued: true,
+      queued:  true,
     });
   }
 

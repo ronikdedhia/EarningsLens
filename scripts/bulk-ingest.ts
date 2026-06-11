@@ -9,10 +9,8 @@
  */
 import * as dotenv from 'dotenv';
 import * as path from 'path';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
-import pdfParse from 'pdf-parse';
 import { getPendingIngestions } from '../src/backend/services/turso.service';
+import { fetchPdfBuffer } from '../src/backend/utils/pdf';
 
 async function parsePdfWithLlamaParse(buffer: Buffer): Promise<string | null> {
   if (!process.env.LLAMA_CLOUD_API_KEY) return null;
@@ -41,29 +39,17 @@ async function parsePdfWithLlamaParse(buffer: Buffer): Promise<string | null> {
   return null;
 }
 
-const execFileAsync = promisify(execFile);
-
 dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
 
 const BASE_URL = `http://localhost:${process.env.BACKEND_PORT ?? '3001'}`;
 const DELAY_MS = 3000;
 
 async function fetchPdfText(url: string): Promise<string> {
-  // BSE uses TLS fingerprinting — Node.js gets 404, curl does not
-  const { stdout } = await execFileAsync('curl', [
-    '-sL', url,
-    '-H', 'Referer: https://www.bseindia.com/',
-    '-H', 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    '--max-time', '30',
-    '--output', '-',
-  ], { encoding: 'buffer', maxBuffer: 50 * 1024 * 1024 });
-
-  if (stdout.slice(0, 4).toString() !== '%PDF') {
-    throw new Error(`Not a PDF — got: ${stdout.slice(0, 80).toString().replace(/\n/g, ' ')}`);
-  }
-  const llamaText = await parsePdfWithLlamaParse(stdout);
+  const buffer = await fetchPdfBuffer(url);
+  const llamaText = await parsePdfWithLlamaParse(buffer);
   if (llamaText) return llamaText;
-  const { text } = await pdfParse(stdout);
+  const pdfParse = (await import('pdf-parse')).default;
+  const { text } = await pdfParse(buffer);
   return text;
 }
 

@@ -82,6 +82,25 @@ export async function registerDailyReportSchedule() {
   console.log('[daily-report] QStash schedule registered → 14:00 IST daily');
 }
 
+export async function registerDailyFilingsSchedule() {
+  const token = process.env.QSTASH_TOKEN;
+  const backendUrl = process.env.BACKEND_PUBLIC_URL;
+  if (!token || !backendUrl) {
+    console.log('[daily-filings] QSTASH_TOKEN or BACKEND_PUBLIC_URL not set — relying on node-cron only');
+    return;
+  }
+
+  const dest = `${backendUrl}/api/daily-filings/run`;
+  const qstash = new Client({ token });
+  const existing = await qstash.schedules.list();
+
+  if (existing.some((s: { destination: string }) => s.destination === dest)) return;
+
+  // 16:00 IST = 10:30 UTC
+  await qstash.schedules.create({ destination: dest, cron: '30 10 * * *' });
+  console.log('[daily-filings] QStash schedule registered → 16:00 IST daily');
+}
+
 export async function registerRefreshSchedule() {
   const token = process.env.QSTASH_TOKEN;
   const backendUrl = process.env.BACKEND_PUBLIC_URL;

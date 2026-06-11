@@ -1,34 +1,13 @@
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { Router, Request, Response } from 'express';
 import { listCompanies, listCompaniesWithStatus, getSystemStats, registerQuarter, isQuarterIngested, addCompany, getCompany, getUserCompanyCount, isUserPremium, trackUserCompany } from '../services/turso.service';
-import { discoverPdfUrl } from '../services/bse.service';
+import { discoverPdfUrl } from '../services/concall-discovery.service';
 import { getCompanyInfoFromScreener, searchCompanies } from '../services/screener.service';
 import { getLastNQuarters } from '../utils/quarters';
 import { notify } from '../services/telegram.service';
 import { sendEmail, discoveryEmail } from '../services/email.service';
+import { fetchPdfText } from '../utils/pdf';
 
-const execFileAsync = promisify(execFile);
 const router = Router();
-
-// BSE AttachLive URLs expire quickly — download via curl immediately while URL is fresh
-async function fetchPdfText(url: string): Promise<string> {
-  const { stdout } = await execFileAsync('curl', [
-    '-sL', url,
-    '-H', 'Referer: https://www.bseindia.com/',
-    '-H', 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    '--max-time', '30',
-    '--output', '-',
-  ], { encoding: 'buffer', maxBuffer: 50 * 1024 * 1024 });
-
-  if (stdout.slice(0, 4).toString() !== '%PDF') {
-    throw new Error(`Not a PDF (got HTML — URL expired or blocked)`);
-  }
-
-  const pdfParse = (await import('pdf-parse')).default;
-  const { text } = await pdfParse(stdout);
-  return text;
-}
 
 type DiscoverResult = { quarter: string; pdfUrl: string | null; status: string };
 

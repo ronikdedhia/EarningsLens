@@ -1,95 +1,15 @@
-import { scrollChunks } from './qdrant.service';
-import { semanticDiff, type TranscriptDiffResult } from './groq.service';
-import { getManagementScores } from './turso.service';
+import { diffGraph, type DiffResult, type KeywordDelta } from '../graphs/diff.graph';
 
-const STOP_WORDS = new Set([
-  'the','a','an','and','or','but','in','on','at','to','for','of','with',
-  'by','from','is','are','was','were','be','been','have','has','had',
-  'do','does','did','will','would','could','should','may','might',
-  'this','that','these','those','we','our','us','you','your','it',
-  'its','they','their','them','as','not','no','so','if','also',
-  'quarter','year','crore','lakh','million','billion','rupee','percent',
-  'which','what','when','where','who','how','said','very','just',
-  'during','over','under','about','than','more','some','into','been',
-]);
-
-function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z\s]/g, ' ')
-    .split(/\s+/)
-    .filter(w => w.length >= 4 && !STOP_WORDS.has(w));
-}
-
-function buildFreqMap(chunks: { text: string }[]): Map<string, number> {
-  const map = new Map<string, number>();
-  for (const c of chunks) {
-    for (const word of tokenize(c.text)) {
-      map.set(word, (map.get(word) ?? 0) + 1);
-    }
-  }
-  return map;
-}
-
-export interface KeywordDelta {
-  word: string;
-  q1Count: number;
-  q2Count: number;
-  delta: number;
-  pctChange: number | null;
-}
-
-export interface DiffResult {
-  q1: string;
-  q2: string;
-  ticker: string;
-  keywordDeltas: KeywordDelta[];
-  toneScoreDelta: number | null;
-  q1ToneScore: number | null;
-  q2ToneScore: number | null;
-  semantic: TranscriptDiffResult;
-}
+export type { KeywordDelta, DiffResult };
 
 export async function computeDiff(ticker: string, q1: string, q2: string): Promise<DiffResult> {
-  const [q1Chunks, q2Chunks] = await Promise.all([
-    scrollChunks({ ticker, quarters: [q1] }, 500),
-    scrollChunks({ ticker, quarters: [q2] }, 500),
-  ]);
-
-  const q1Map = buildFreqMap(q1Chunks);
-  const q2Map = buildFreqMap(q2Chunks);
-
-  // Union of all words with min occurrence threshold
-  const allWords = new Set([...q1Map.keys(), ...q2Map.keys()]);
-  const deltas: KeywordDelta[] = [];
-
-  for (const word of allWords) {
-    const c1 = q1Map.get(word) ?? 0;
-    const c2 = q2Map.get(word) ?? 0;
-    const delta = c2 - c1;
-    const pctChange = c1 > 0 ? Math.round(((c2 - c1) / c1) * 100) : null;
-    // Only include words that appeared at least 2× in either quarter
-    if (c1 + c2 < 2) continue;
-    deltas.push({ word, q1Count: c1, q2Count: c2, delta, pctChange });
-  }
-
-  // Sort by absolute delta, take top 30
-  const keywordDeltas = deltas
-    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
-    .slice(0, 30);
-
-  // Tone score delta from management_scores table
-  const mgmtScores = await getManagementScores(ticker);
-  const s1 = mgmtScores.find(s => s.quarter === q1);
-  const s2 = mgmtScores.find(s => s.quarter === q2);
-  const q1ToneScore = s1 ? Math.round((s1.confidence + s1.transparency) / 2) : null;
-  const q2ToneScore = s2 ? Math.round((s2.confidence + s2.transparency) / 2) : null;
-  const toneScoreDelta = q1ToneScore !== null && q2ToneScore !== null ? q2ToneScore - q1ToneScore : null;
-
-  // Semantic diff via LLM
-  const q1Text = q1Chunks.map(c => c.text).join('\n');
-  const q2Text = q2Chunks.map(c => c.text).join('\n');
-  const semantic = await semanticDiff(ticker, q1, q2, q1Text, q2Text);
-
-  return { q1, q2, ticker, keywordDeltas, toneScoreDelta, q1ToneScore, q2ToneScore, semantic };
+  const state = await diffGraph.invoke({
+    ticker,
+    q1,
+    q2,
+    q1Chunks: [],
+    q2Chunks: [],
+    result:   null as unknown as DiffResult,
+  });
+  return state.result;
 }

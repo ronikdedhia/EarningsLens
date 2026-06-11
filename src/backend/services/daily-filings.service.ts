@@ -69,7 +69,7 @@ async function fetchFilingsForCompany(
   from: string,
   to: string,
 ): Promise<RawBseFiling[]> {
-  const { data } = await axios.get(`${BSE_API}/AnnGetData/w`, {
+  const { data } = await axios.get(`${BSE_API}/AnnSubCategoryGetData/w`, {
     params: {
       strCat:      '-1',
       strPrevDate:  from,
@@ -79,8 +79,11 @@ async function fetchFilingsForCompany(
       strType:     'C',
       subcategory: '-1',
     },
-    headers: { Referer: REFERER },
-    timeout: 15_000,
+    headers: {
+      Referer:    REFERER,
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    },
+    timeout: 30_000,
   });
 
   const announcements: Array<{
@@ -111,24 +114,31 @@ async function fetchFilingsForCompany(
 
 export async function scrapeFilingsForDate(targetDate?: Date): Promise<RawBseFiling[]> {
   const to   = new Date(targetDate ?? Date.now());
-  const from = new Date(to.getTime() - 24 * 60 * 60 * 1000);
+  const from = new Date(to.getTime() - 24 * 60 * 60 * 1000); // 24h window
 
   const companies = await listCompanies();
+  console.log(`[scrape] ${companies.length} companies, window: ${formatBseDate(from)} → ${formatBseDate(to)}`);
   const allFilings: RawBseFiling[] = [];
 
-  for (const company of companies) {
+  for (let i = 0; i < companies.length; i++) {
+    const company = companies[i];
     const bseCode = company.bseCode ?? await resolveBseCode(company.ticker);
-    if (!bseCode) continue;
+    if (!bseCode) {
+      console.log(`[scrape] (${i + 1}/${companies.length}) ${company.ticker} — no BSE code, skip`);
+      continue;
+    }
     try {
       const filings = await fetchFilingsForCompany(
         company.ticker, bseCode,
         formatBseDate(from), formatBseDate(to),
       );
+      console.log(`[scrape] (${i + 1}/${companies.length}) ${company.ticker} (${bseCode}) → ${filings.length} filings`);
       allFilings.push(...filings);
-    } catch {
-      // non-fatal per company
+    } catch (err) {
+      console.log(`[scrape] (${i + 1}/${companies.length}) ${company.ticker} — ERROR: ${String(err).slice(0, 80)}`);
     }
   }
 
+  console.log(`[scrape] total raw filings: ${allFilings.length}`);
   return allFilings;
 }

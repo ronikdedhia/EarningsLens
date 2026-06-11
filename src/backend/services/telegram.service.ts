@@ -1,23 +1,34 @@
-const TOKEN   = process.env.TELEGRAM_ACCESS_TOKEN;
-const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-const API     = `https://api.telegram.org/bot${TOKEN}`;
+const API = () => `https://api.telegram.org/bot${process.env.TELEGRAM_ACCESS_TOKEN}`;
+
+let _telegramsSent = 0;
+export function getTelegramCount() { return _telegramsSent; }
+export function resetTelegramCount() { _telegramsSent = 0; }
 
 // Fire-and-forget — call without await so it never blocks a response
 export function notify(message: string): void {
-  if (!TOKEN || !CHAT_ID) return;
-  fetch(`${API}/sendMessage`, {
+  const token  = process.env.TELEGRAM_ACCESS_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  if (!token || !chatId) {
+    console.log(`[telegram] no token/chat — would send: ${message.slice(0, 80)}`);
+    return;
+  }
+  _telegramsSent++;
+  console.log(`[telegram] sending msg #${_telegramsSent}: ${message.slice(0, 80)}`);
+  fetch(`${API()}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: CHAT_ID, text: message, parse_mode: 'Markdown' }),
-  }).catch(() => {});
+    body: JSON.stringify({ chat_id: chatId, text: message, parse_mode: 'Markdown' }),
+  }).catch((err) => console.error('[telegram] send failed:', String(err)));
 }
 
 // Blocking version for scripts that need confirmation
 export async function notifyAsync(message: string): Promise<void> {
-  if (!TOKEN || !CHAT_ID) return;
-  await fetch(`${API}/sendMessage`, {
+  const token  = process.env.TELEGRAM_ACCESS_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  if (!token || !chatId) return;
+  await fetch(`${API()}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: CHAT_ID, text: message, parse_mode: 'Markdown' }),
+    body: JSON.stringify({ chat_id: chatId, text: message, parse_mode: 'Markdown' }),
   });
 }

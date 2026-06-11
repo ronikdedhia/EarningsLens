@@ -6,6 +6,7 @@ import { getLastNQuarters } from '../utils/quarters';
 import { notify } from '../services/telegram.service';
 import { sendEmail, discoveryEmail } from '../services/email.service';
 import { fetchPdfText } from '../utils/pdf';
+import { qstashVerify } from '../middleware/qstash';
 
 const router = Router();
 
@@ -125,9 +126,9 @@ router.get('/search', async (req: Request, res: Response) => {
 });
 
 // POST /api/companies/refresh-all — check all tracked companies for new quarters
-// Called weekly by QStash (Monday 09:00 IST) and node-cron fallback.
+// Called weekly by QStash (Friday 12:00 IST) and node-cron fallback.
 // Responds 202 immediately and runs in background to avoid QStash timeout.
-router.post('/refresh-all', async (_req: Request, res: Response) => {
+router.post('/refresh-all', qstashVerify, async (_req: Request, res: Response) => {
   const port = String(process.env.BACKEND_PORT ?? '3001');
   res.status(202).json({ status: 'started', message: 'Refresh running in background' });
   runRefreshAll(port).catch(err =>

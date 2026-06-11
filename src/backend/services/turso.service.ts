@@ -178,10 +178,10 @@ export async function getPendingIngestions(): Promise<QuarterRow[]> {
 
 export async function registerQuarter(row: Omit<QuarterRow, 'ingestedAt'>): Promise<void> {
   await db().execute({
-    sql: `INSERT INTO quarter_index (ticker, quarter, fiscal_year, published_at, source, pdf_url, ingested_at)
-          VALUES (?, ?, ?, ?, ?, ?, '')
-          ON CONFLICT (ticker, quarter) DO UPDATE SET pdf_url = excluded.pdf_url, source = excluded.source`,
-    args: [row.ticker, row.quarter, row.fiscalYear, row.publishedAt, row.pdfUrl, row.pdfUrl],
+    sql: `INSERT INTO quarter_index (ticker, quarter, fiscal_year, published_at, pdf_url, ingested_at)
+          VALUES (?, ?, ?, ?, ?, '')
+          ON CONFLICT (ticker, quarter) DO UPDATE SET pdf_url = excluded.pdf_url`,
+    args: [row.ticker, row.quarter, row.fiscalYear, row.publishedAt, row.pdfUrl],
   });
 }
 
@@ -698,4 +698,13 @@ export async function getLatestFilingDate(): Promise<string | null> {
     'SELECT MAX(filing_date) AS d FROM daily_filings'
   );
   return (rows[0]?.d as string) ?? null;
+}
+
+// ── Newsletter ────────────────────────────────────────────────────────────────
+
+export async function getAllInsights(): Promise<InsightRow[]> {
+  const { rows } = await db().execute(
+    'SELECT id, ticker, title, content, generated_at AS generatedAt FROM insights ORDER BY ticker, id'
+  );
+  return rows as unknown as InsightRow[];
 }

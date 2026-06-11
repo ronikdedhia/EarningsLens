@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { Client } from '@upstash/qstash';
 import { QdrantClient } from '@qdrant/js-client-rest';
 import { notify } from '../services/telegram.service';
+import { qstashVerify } from '../middleware/qstash';
+import { sendWeeklyNewsletter, parseNewsletterCron } from '../services/newsletter.service';
 
 export const keepaliveRouter = Router();
 
@@ -9,12 +11,34 @@ export const keepaliveRouter = Router();
 let _sendDailyReport: (() => Promise<void>) | null = null;
 export function setDailyReportHandler(fn: () => Promise<void>) { _sendDailyReport = fn; }
 
-keepaliveRouter.post('/daily-report', async (_, res) => {
+keepaliveRouter.post('/daily-report', qstashVerify, async (_, res) => {
   if (_sendDailyReport) await _sendDailyReport();
   res.json({ status: 'ok' });
 });
 
-keepaliveRouter.post('/ping', async (_, res) => {
+keepaliveRouter.post('/newsletter', qstashVerify, async (_, res) => {
+  try {
+    const result = await sendWeeklyNewsletter();
+    console.log('[newsletter]', result);
+    res.json(result);
+  } catch (err) {
+    console.error('[newsletter] ERROR', err);
+    notify(`⚠️ *EarningsLens* weekly newsletter failed: \`${String(err).slice(0, 200)}\``);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+keepaliveRouter.post('/test-telegram', async (_, res) => {
+  const token  = process.env.TELEGRAM_ACCESS_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  if (!token || !chatId) {
+    return res.status(500).json({ error: 'TELEGRAM_ACCESS_TOKEN or TELEGRAM_CHAT_ID not set in env' });
+  }
+  notify('🧪 *EarningsLens* — Telegram test message. If you see this, the integration is working!');
+  return res.json({ status: 'sent', chatId });
+});
+
+keepaliveRouter.post('/ping', qstashVerify, async (_, res) => {
   try {
     const qdrant = new QdrantClient({
       url: process.env.QDRANT_URL!,
@@ -37,17 +61,16 @@ async function pingQdrant() {
   console.log('[keepalive] Qdrant pinged —', result.collections.length, 'collections');
 }
 
+export async function pingQdrantOnce() {
+  try {
+    await pingQdrant();
+  } catch (err) {
+    console.error('[keepalive] Qdrant ping failed:', err);
+  }
+}
+
 export async function registerKeepaliveSchedule() {
-  // Always run a local interval so Qdrant stays alive regardless of QStash config
-  setInterval(async () => {
-    try {
-      await pingQdrant();
-    } catch (err) {
-      console.error('[keepalive] Qdrant ping failed:', err);
-      notify(`⚠️ *EarningsLens keepalive FAILED*\n\`${String(err).slice(0, 200)}\``);
-    }
-  }, 10 * 60 * 1000); // every 10 min
-  console.log('[keepalive] Local interval started — pinging Qdrant every 10 min');
+  console.log('[keepalive] Qdrant will be pinged once daily alongside the daily report');
 
   const token = process.env.QSTASH_TOKEN;
   const backendUrl = process.env.BACKEND_PUBLIC_URL;
@@ -101,6 +124,25 @@ export async function registerDailyFilingsSchedule() {
   console.log('[daily-filings] QStash schedule registered → 16:00 IST daily');
 }
 
+export async function registerNewsletterSchedule() {
+  const token = process.env.QSTASH_TOKEN;
+  const backendUrl = process.env.BACKEND_PUBLIC_URL;
+  if (!token || !backendUrl) {
+    console.log('[newsletter] QSTASH_TOKEN or BACKEND_PUBLIC_URL not set — relying on node-cron only');
+    return;
+  }
+
+  const dest = `${backendUrl}/api/keepalive/newsletter`;
+  const qstash = new Client({ token });
+  const existing = await qstash.schedules.list();
+
+  if (existing.some((s: { destination: string }) => s.destination === dest)) return;
+
+  const cronExpr = parseNewsletterCron();
+  await qstash.schedules.create({ destination: dest, cron: cronExpr });
+  console.log(`[newsletter] QStash schedule registered → ${process.env.NEWSLETTER_SEND_TIME ?? '09:00'} IST Friday (${cronExpr} UTC)`);
+}
+
 export async function registerRefreshSchedule() {
   const token = process.env.QSTASH_TOKEN;
   const backendUrl = process.env.BACKEND_PUBLIC_URL;
@@ -115,7 +157,7 @@ export async function registerRefreshSchedule() {
 
   if (existing.some((s: { destination: string }) => s.destination === dest)) return;
 
-  // Tuesday 12:00 IST = Tuesday 06:30 UTC
-  await qstash.schedules.create({ destination: dest, cron: '30 6 * * 2' });
-  console.log('[refresh] QStash weekly refresh schedule registered → Tuesday 12:00 IST');
+  // Friday 12:00 IST = Friday 06:30 UTC
+  await qstash.schedules.create({ destination: dest, cron: '30 6 * * 5' });
+  console.log('[refresh] QStash weekly refresh schedule registered → Friday 12:00 IST');
 }

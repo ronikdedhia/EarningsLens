@@ -6,6 +6,7 @@ import { fetchPdfText } from '../utils/pdf';
 import { isDailyFilingKnown, saveDailyFiling, type FilingInsights } from '../services/turso.service';
 import { notify } from '../services/telegram.service';
 import { FilingImportanceSchema, FilingInsightsSchema, FILING_CATEGORIES } from '../schemas';
+import { updateScrapeStage } from '../routes/daily-filings.route';
 
 // ── Models ────────────────────────────────────────────────────────────────────
 
@@ -45,28 +46,34 @@ interface ProcessedFiling extends ClassifiedFiling {
 // ── State ─────────────────────────────────────────────────────────────────────
 
 const DailyFilingsAnnotation = Annotation.Root({
-  targetDate:        Annotation<string>,          // YYYY-MM-DD
-  rawFilings:        Annotation<RawBseFiling[]>,
-  classified:        Annotation<ClassifiedFiling[]>,
-  processed:         Annotation<ProcessedFiling[]>,
-  savedCount:        Annotation<number>,
+  targetDate:    Annotation<string>,          // YYYY-MM-DD
+  totalScraped:  Annotation<number>,          // BSE results before dedup
+  allScraped:    Annotation<RawBseFiling[]>,  // full list before dedup (for notify)
+  rawFilings:    Annotation<RawBseFiling[]>,  // new filings after dedup
+  classified:    Annotation<ClassifiedFiling[]>,
+  processed:     Annotation<ProcessedFiling[]>,
+  savedCount:    Annotation<number>,
 });
 
 // ── Nodes ─────────────────────────────────────────────────────────────────────
 
 async function scrapeNode(state: typeof DailyFilingsAnnotation.State) {
+  updateScrapeStage('scraping', `BSE filings for ${state.targetDate}`);
   const date = state.targetDate ? new Date(state.targetDate) : undefined;
-  const rawFilings = await scrapeFilingsForDate(date);
+  const allFilings = await scrapeFilingsForDate(date);
+  const totalScraped = allFilings.length;
 
-  // Filter out filings already in DB
+  updateScrapeStage('deduping', `${totalScraped} raw filings from BSE`);
   const newFilings: RawBseFiling[] = [];
-  for (const f of rawFilings) {
+  for (const f of allFilings) {
     if (!(await isDailyFilingKnown(f.pdfUrl))) newFilings.push(f);
   }
-  return { rawFilings: newFilings };
+  updateScrapeStage('scraped', `total=${totalScraped} new=${newFilings.length} (${totalScraped - newFilings.length} already seen)`);
+  return { rawFilings: newFilings, allScraped: allFilings, totalScraped };
 }
 
 async function classifyNode(state: typeof DailyFilingsAnnotation.State) {
+  updateScrapeStage('classifying', `${state.rawFilings.length} new filings via Groq`);
   if (!state.rawFilings.length) return { classified: [] as ClassifiedFiling[] };
 
   const classified: ClassifiedFiling[] = [];
@@ -103,13 +110,18 @@ Also classify into: earnings | board | investor_meet | press_release | managemen
     }
   }
 
+  const important = classified.filter(c => c.isImportant).length;
+  updateScrapeStage('classified', `${classified.length} filings — ${important} important`);
   return { classified };
 }
 
 async function downloadAndInsightNode(state: typeof DailyFilingsAnnotation.State) {
+  const importantCount = state.classified.filter(f => f.isImportant).length;
+  updateScrapeStage('downloading', `PDFs + insights for ${importantCount} important filings`);
   const processed: ProcessedFiling[] = [];
   const model = insightModel();
 
+  let pdfOk = 0, pdfFail = 0;
   for (const filing of state.classified) {
     // Always record the filing; only download text for important ones
     if (!filing.isImportant) {
@@ -117,18 +129,25 @@ async function downloadAndInsightNode(state: typeof DailyFilingsAnnotation.State
       continue;
     }
 
+    updateScrapeStage('downloading-pdf', `${filing.ticker} — ${filing.title.slice(0, 60)}`);
     let textContent = '';
     let insights: FilingInsights | null = null;
     let sentiment = 'neutral';
 
     try {
       textContent = await fetchPdfText(filing.pdfUrl);
+      pdfOk++;
+      console.log(`[graph:process] PDF ok (${textContent.length} chars)`);
     } catch {
       // AttachHis may 404 for same-day filings — try AttachLive
       try {
         const livePdfUrl = filing.pdfUrl.replace('/AttachHis/', '/AttachLive/');
         textContent = await fetchPdfText(livePdfUrl);
+        pdfOk++;
+        console.log(`[graph:process] PDF ok via AttachLive (${textContent.length} chars)`);
       } catch {
+        pdfFail++;
+        console.log(`[graph:process] PDF failed — proceeding without text`);
         textContent = '';
       }
     }
@@ -166,10 +185,12 @@ Provide:
     processed.push({ ...filing, textContent, insights, sentiment });
   }
 
+  updateScrapeStage('processed', `${processed.length} filings — pdf_ok=${pdfOk} pdf_fail=${pdfFail}`);
   return { processed };
 }
 
 async function saveNode(state: typeof DailyFilingsAnnotation.State) {
+  updateScrapeStage('saving', `${state.processed.length} filings to DB`);
   let savedCount = 0;
   for (const f of state.processed) {
     try {
@@ -191,27 +212,80 @@ async function saveNode(state: typeof DailyFilingsAnnotation.State) {
       // non-fatal per filing
     }
   }
+  updateScrapeStage('saved', `${savedCount} filings written to DB`);
   return { savedCount };
 }
 
+function groupByTicker<T extends { ticker: string }>(items: T[]): Map<string, T[]> {
+  const map = new Map<string, T[]>();
+  for (const item of items) {
+    if (!map.has(item.ticker)) map.set(item.ticker, []);
+    map.get(item.ticker)!.push(item);
+  }
+  return map;
+}
+
 async function notifyNode(state: typeof DailyFilingsAnnotation.State) {
-  const important = state.processed.filter(f => f.isImportant);
-  if (!important.length) {
-    notify(`📋 *EarningsLens Daily Filings* — ${state.targetDate}\nNo important filings found today.`);
+  if (!state.rawFilings.length) {
+    if (state.totalScraped === 0) {
+      notify(`📋 *EarningsLens* — ${state.targetDate}\n⚠️ BSE returned 0 filings — possible API blip.`);
+      return {};
+    }
+    // All already in DB — group by ticker, show titles
+    const grouped = groupByTicker(state.allScraped ?? []);
+    const sections: string[] = [];
+    for (const [ticker, filings] of grouped) {
+      const titles = filings.map(f => `  · ${f.title.slice(0, 70)}`).join('\n');
+      sections.push(`*${ticker}* (${filings.length})\n${titles}`);
+    }
+    const CHUNK = 8; // tickers per message
+    const tickers = [...grouped.keys()];
+    for (let i = 0; i < sections.length; i += CHUNK) {
+      const header = i === 0
+        ? `📋 *EarningsLens* — ${state.targetDate}\n${state.totalScraped} filings (all already in DB)\n\n`
+        : `📋 _(continued)_\n\n`;
+      notify(header + sections.slice(i, i + CHUNK).join('\n\n'));
+    }
     return {};
   }
 
-  const lines = important.slice(0, 10).map(f => {
-    const emoji = f.importance >= 5 ? '🔴' : f.importance >= 4 ? '🟡' : '🟢';
-    const insight = f.insights?.summary ? `\n   _${f.insights.summary.slice(0, 100)}_` : '';
-    return `${emoji} *${f.ticker}* — ${f.title.slice(0, 80)}${insight}`;
-  });
+  const important = state.processed.filter(f => f.isImportant);
 
-  notify(
-    `📋 *EarningsLens Daily Filings* — ${state.targetDate}\n` +
-    `${important.length} important filing${important.length !== 1 ? 's' : ''} found\n\n` +
-    lines.join('\n')
-  );
+  if (!important.length) {
+    // New filings saved but none important — group by ticker
+    const grouped = groupByTicker(state.processed);
+    const sections: string[] = [];
+    for (const [ticker, filings] of grouped) {
+      const titles = filings.map(f => `  · ${f.title.slice(0, 70)}`).join('\n');
+      sections.push(`*${ticker}* (${filings.length})\n${titles}`);
+    }
+    notify(
+      `📋 *EarningsLens* — ${state.targetDate}\n` +
+      `${state.processed.length} new filings saved, none flagged important\n\n` +
+      sections.join('\n\n')
+    );
+    return {};
+  }
+
+  // Important filings — grouped by ticker, with insight summary
+  const grouped = groupByTicker(important);
+  const sections: string[] = [];
+  for (const [ticker, filings] of grouped) {
+    const lines = filings.map(f => {
+      const emoji = f.importance >= 5 ? '🔴' : f.importance >= 4 ? '🟡' : '🟢';
+      const summary = f.insights?.summary ? `\n    _${f.insights.summary.slice(0, 120)}_` : '';
+      return `  ${emoji} ${f.title.slice(0, 70)}${summary}`;
+    });
+    sections.push(`*${ticker}* (${filings.length})\n${lines.join('\n')}`);
+  }
+
+  const CHUNK = 6;
+  for (let i = 0; i < sections.length; i += CHUNK) {
+    const header = i === 0
+      ? `📋 *EarningsLens* — ${state.targetDate}\n${important.length} important of ${state.rawFilings.length} new filings\n\n`
+      : `📋 _(continued)_\n\n`;
+    notify(header + sections.slice(i, i + CHUNK).join('\n\n'));
+  }
   return {};
 }
 
@@ -238,11 +312,13 @@ export const dailyFilingsGraph = workflow.compile();
 export async function runDailyFilingsScrape(targetDate?: string): Promise<{ saved: number; important: number }> {
   const date = targetDate ?? new Date().toISOString().slice(0, 10);
   const state = await dailyFilingsGraph.invoke({
-    targetDate:  date,
-    rawFilings:  [],
-    classified:  [],
-    processed:   [],
-    savedCount:  0,
+    targetDate:   date,
+    totalScraped: 0,
+    allScraped:   [],
+    rawFilings:   [],
+    classified:   [],
+    processed:    [],
+    savedCount:   0,
   });
   return {
     saved:     state.savedCount,

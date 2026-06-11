@@ -1,8 +1,13 @@
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 dotenv.config({ path: path.resolve(process.cwd(), process.env.NODE_ENV === 'production' ? '.env' : '.env.local') });
-import * as Sentry from '@sentry/node';
-Sentry.init({ dsn: process.env.SENTRY_DSN ?? '', tracesSampleRate: 0.1 });
+process.setMaxListeners(0);
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err);
+});
 import express from 'express';
 import cors from 'cors';
 import cron from 'node-cron';
@@ -18,7 +23,8 @@ import { promisesRouter }    from './routes/promises.route';
 import { redflagsRouter }   from './routes/redflags.route';
 import { diffRouter }       from './routes/diff.route';
 import { sectorRouter }     from './routes/sector.route';
-import { keepaliveRouter, registerKeepaliveSchedule, registerDailyReportSchedule, registerDailyFilingsSchedule, registerRefreshSchedule, setDailyReportHandler } from './routes/keepalive.route';
+import { keepaliveRouter, registerKeepaliveSchedule, registerDailyReportSchedule, registerDailyFilingsSchedule, registerNewsletterSchedule, registerRefreshSchedule, setDailyReportHandler, pingQdrantOnce } from './routes/keepalive.route';
+import { sendWeeklyNewsletter, parseNewsletterCron } from './services/newsletter.service';
 import { dailyFilingsRouter } from './routes/daily-filings.route';
 import { runDailyFilingsScrape } from './graphs/daily-filings.graph';
 import { notify } from './services/telegram.service';
@@ -27,7 +33,15 @@ import { getSystemStats, getTodayQueryCount } from './services/turso.service';
 const app = express();
 
 app.use(cors({ origin: (process.env.FRONTEND_URL ?? 'http://localhost:3000').replace(/\/$/, '') }));
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({
+  limit: '10mb',
+  verify: (req: any, _res: any, buf: Buffer) => { req.rawBody = buf.toString(); },
+}));
+
+app.use((req, _res, next) => {
+  console.log(`[req] ${req.method} ${req.originalUrl}`);
+  next();
+});
 
 app.use('/api/ingest',    ingestRouter);
 app.use('/api/query',     queryRouter);
@@ -46,9 +60,9 @@ app.use('/api/daily-filings', dailyFilingsRouter);
 
 app.get('/health', (_, res) => res.json({ status: 'ok' }));
 
-Sentry.setupExpressErrorHandler(app);
 
 export async function sendDailyReport() {
+  await pingQdrantOnce(); // one daily Qdrant ping alongside the report
   try {
     const [stats, todayQueries] = await Promise.all([getSystemStats(), getTodayQueryCount()]);
     const date = new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric' });
@@ -69,9 +83,6 @@ const PORT = process.env.PORT ?? process.env.BACKEND_PORT ?? 3001;
 app.listen(PORT, async () => {
   console.log(`Express backend → http://localhost:${PORT}`);
 
-  // Notify on every startup so you know the server woke up
-  notify(`🟢 *EarningsLens server started*\nListening on port ${PORT}`);
-
   setDailyReportHandler(sendDailyReport);
   registerKeepaliveSchedule().catch(console.error);
 
@@ -90,15 +101,30 @@ app.listen(PORT, async () => {
   }, { timezone: 'UTC' });
   console.log('[cron] Daily BSE filings scrape scheduled at 16:00 IST');
 
-  // Weekly refresh — Tuesday 12:00 IST (06:30 UTC) — checks all companies for new quarters
+  // Weekly refresh — Friday 12:00 IST (06:30 UTC) — checks all companies for new quarters
   const refreshPort = String(PORT);
-  cron.schedule('30 6 * * 2', () => {
+  cron.schedule('30 6 * * 5', () => {
     fetch(`http://localhost:${refreshPort}/api/companies/refresh-all`, { method: 'POST' })
       .catch(err => notify(`⚠️ *EarningsLens* weekly refresh trigger failed: \`${String(err).slice(0, 200)}\``));
   }, { timezone: 'UTC' });
-  console.log('[cron] Weekly refresh scheduled at Tuesday 12:00 IST');
+  console.log('[cron] Weekly refresh scheduled at Friday 12:00 IST');
+
+  // Weekly newsletter — Friday at NEWSLETTER_SEND_TIME IST (default 09:00)
+  const newsletterCron = parseNewsletterCron();
+  cron.schedule(newsletterCron, async () => {
+    try {
+      const result = await sendWeeklyNewsletter();
+      if (result.sent) {
+        notify(`📧 *EarningsLens* weekly newsletter sent — ${result.companies} companies · ${result.insights} insights`);
+      }
+    } catch (err) {
+      notify(`⚠️ *EarningsLens* weekly newsletter failed: \`${String(err).slice(0, 200)}\``);
+    }
+  }, { timezone: 'UTC' });
+  console.log(`[cron] Weekly newsletter scheduled (${process.env.NEWSLETTER_SEND_TIME ?? '09:00'} IST Friday)`);
 
   await registerDailyReportSchedule();
   await registerDailyFilingsSchedule();
+  await registerNewsletterSchedule();
   await registerRefreshSchedule();
 });

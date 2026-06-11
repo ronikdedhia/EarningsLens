@@ -22,7 +22,6 @@
     "@langchain/textsplitters": "^1.0.1",
     "@libsql/client": "^0.17.3",
     "@qdrant/js-client-rest": "^1.9.0",
-    "@sentry/nextjs": "^10.53.1",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/node": "^20.14.0",

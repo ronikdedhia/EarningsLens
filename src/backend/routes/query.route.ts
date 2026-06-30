@@ -2,7 +2,6 @@ import { Router, Request, Response } from 'express';
 import { runRAGQuery } from '../rag/chain';
 import { saveQueryLog } from '../services/turso.service';
 import { upsertQueryLog } from '../services/qdrant.service';
-import { notify } from '../services/telegram.service';
 import { sendEmail, queryEmail } from '../services/email.service';
 
 const router = Router();
@@ -29,8 +28,7 @@ router.post('/', async (req: Request, res: Response) => {
     createdAt: new Date().toISOString(),
   }).catch(() => {});
 
-  notify(`🔎 *Query*${ticker ? ` — *${String(ticker).toUpperCase()}*` : ''}\n\`${query.trim().slice(0, 120)}\``);
-  const { subject, html } = queryEmail(query.trim(), result.answer, ticker ? String(ticker).toUpperCase() : undefined);
+const { subject, html } = queryEmail(query.trim(), result.answer, ticker ? String(ticker).toUpperCase() : undefined);
   sendEmail(subject, html).catch(() => {});
 
   return res.json({ ...result, queryLogId });

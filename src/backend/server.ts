@@ -27,7 +27,6 @@ import { keepaliveRouter, registerKeepaliveSchedule, registerDailyReportSchedule
 import { sendWeeklyNewsletter, parseNewsletterCron } from './services/newsletter.service';
 import { dailyFilingsRouter } from './routes/daily-filings.route';
 import { runDailyFilingsScrape } from './graphs/daily-filings.graph';
-import { notify } from './services/telegram.service';
 import { getSystemStats, getTodayQueryCount } from './services/turso.service';
 
 const app = express();
@@ -64,18 +63,9 @@ app.get('/health', (_, res) => res.json({ status: 'ok' }));
 export async function sendDailyReport() {
   await pingQdrantOnce(); // one daily Qdrant ping alongside the report
   try {
-    const [stats, todayQueries] = await Promise.all([getSystemStats(), getTodayQueryCount()]);
-    const date = new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric' });
-    notify(
-      `📊 *EarningsLens Daily Report — ${date}*\n\n` +
-      `🏢 Companies tracked: *${stats.companies}* (${stats.sectors} sectors)\n` +
-      `📄 Transcripts ingested: *${stats.ingested}* · pending: ${stats.pending}\n` +
-      `🧠 AI Insights stored: *${stats.aiInsights}*\n` +
-      `🔎 Queries today: *${todayQueries}*\n\n` +
-      `✅ Server is alive and running`
-    );
-  } catch (err) {
-    notify(`⚠️ *EarningsLens* daily report failed: \`${String(err).slice(0, 200)}\``);
+    await Promise.all([getSystemStats(), getTodayQueryCount()]);
+  } catch {
+    // ignore
   }
 }
 
@@ -96,7 +86,7 @@ app.listen(PORT, async () => {
       const { saved, important } = await runDailyFilingsScrape();
       console.log(`[cron] Daily filings: ${saved} saved, ${important} important`);
     } catch (err) {
-      notify(`⚠️ *EarningsLens* daily filings scrape failed: \`${String(err).slice(0, 200)}\``);
+      console.error('[cron] Daily filings scrape failed:', err);
     }
   }, { timezone: 'UTC' });
   console.log('[cron] Daily BSE filings scrape scheduled at 16:00 IST');
@@ -105,7 +95,7 @@ app.listen(PORT, async () => {
   const refreshPort = String(PORT);
   cron.schedule('30 6 * * 5', () => {
     fetch(`http://localhost:${refreshPort}/api/companies/refresh-all`, { method: 'POST' })
-      .catch(err => notify(`⚠️ *EarningsLens* weekly refresh trigger failed: \`${String(err).slice(0, 200)}\``));
+      .catch(err => console.error('[cron] Weekly refresh trigger failed:', err));
   }, { timezone: 'UTC' });
   console.log('[cron] Weekly refresh scheduled at Friday 12:00 IST');
 
@@ -114,11 +104,8 @@ app.listen(PORT, async () => {
   cron.schedule(newsletterCron, async () => {
     try {
       const result = await sendWeeklyNewsletter();
-      if (result.sent) {
-        notify(`📧 *EarningsLens* weekly newsletter sent — ${result.companies} companies · ${result.insights} insights`);
-      }
     } catch (err) {
-      notify(`⚠️ *EarningsLens* weekly newsletter failed: \`${String(err).slice(0, 200)}\``);
+      console.error('[cron] Weekly newsletter failed:', err);
     }
   }, { timezone: 'UTC' });
   console.log(`[cron] Weekly newsletter scheduled (${process.env.NEWSLETTER_SEND_TIME ?? '09:00'} IST Friday)`);

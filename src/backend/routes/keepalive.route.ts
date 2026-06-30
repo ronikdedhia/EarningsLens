@@ -23,7 +23,6 @@ keepaliveRouter.post('/newsletter', qstashVerify, async (_, res) => {
     res.json(result);
   } catch (err) {
     console.error('[newsletter] ERROR', err);
-    notify(`⚠️ *EarningsLens* weekly newsletter failed: \`${String(err).slice(0, 200)}\``);
     res.status(500).json({ error: String(err) });
   }
 });
@@ -47,7 +46,6 @@ keepaliveRouter.post('/ping', qstashVerify, async (_, res) => {
     const result = await qdrant.getCollections();
     res.json({ status: 'ok', collections: result.collections.length });
   } catch (err) {
-    notify(`⚠️ *EarningsLens keepalive FAILED*\n\`${String(err).slice(0, 200)}\``);
     res.status(500).json({ status: 'error', error: String(err) });
   }
 });

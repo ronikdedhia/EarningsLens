@@ -1,7 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { runRAGQuery } from '../rag/chain';
 import { getInsights, saveInsight, deleteInsights, getQueryLogsForTicker } from '../services/turso.service';
-import { notify } from '../services/telegram.service';
 import { sendEmail, insightsEmail } from '../services/email.service';
 
 const router = Router();
@@ -89,8 +88,6 @@ router.post('/generate/:ticker', async (req: Request, res: Response) => {
   const insights = await getInsights(ticker);
 
   if (generated.length > 0) {
-    const titles = generated.map(i => i.title).join(', ');
-    notify(`🧠 *${ticker}* — ${generated.length} AI insights generated\n_${titles}_`);
     const { subject, html } = insightsEmail(ticker, generated);
     sendEmail(subject, html).catch(() => {});
   }

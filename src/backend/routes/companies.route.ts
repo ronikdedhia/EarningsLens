@@ -3,7 +3,6 @@ import { listCompanies, listCompaniesWithStatus, getSystemStats, registerQuarter
 import { discoverPdfUrl } from '../services/concall-discovery.service';
 import { getCompanyInfoFromScreener, searchCompanies } from '../services/screener.service';
 import { getLastNQuarters } from '../utils/quarters';
-import { notify } from '../services/telegram.service';
 import { sendEmail, discoveryEmail } from '../services/email.service';
 import { fetchPdfText } from '../utils/pdf';
 import { qstashVerify } from '../middleware/qstash';
@@ -72,8 +71,6 @@ export async function runRefreshAll(port: string): Promise<void> {
   const companies = await listCompanies();
   if (!companies.length) return;
 
-  notify(`🔄 *EarningsLens* weekly refresh started — checking ${companies.length} companies`);
-
   const newlyIngested: string[] = [];
   const errors: string[] = [];
 
@@ -89,18 +86,8 @@ export async function runRefreshAll(port: string): Promise<void> {
     }
   }
 
-  if (newlyIngested.length > 0) {
-    notify(
-      `✅ *EarningsLens* weekly refresh complete\n` +
-      `*${newlyIngested.length} new quarter(s) ingested:*\n` +
-      newlyIngested.map(s => `• ${s}`).join('\n')
-    );
-  } else {
-    notify(`ℹ️ *EarningsLens* weekly refresh — no new quarters found (${companies.length} companies checked)`);
-  }
-
   if (errors.length > 0) {
-    notify(`⚠️ *EarningsLens* refresh errors:\n${errors.slice(0, 10).join('\n')}`);
+    console.error('[refresh] errors:', errors.slice(0, 10).join('\n'));
   }
 }
 
@@ -131,9 +118,7 @@ router.get('/search', async (req: Request, res: Response) => {
 router.post('/refresh-all', qstashVerify, async (_req: Request, res: Response) => {
   const port = String(process.env.BACKEND_PORT ?? '3001');
   res.status(202).json({ status: 'started', message: 'Refresh running in background' });
-  runRefreshAll(port).catch(err =>
-    notify(`⚠️ *EarningsLens* refresh-all crashed: \`${String(err).slice(0, 200)}\``)
-  );
+  runRefreshAll(port).catch(err => console.error('[refresh-all] crashed:', err));
 });
 
 // GET /api/companies/:ticker — look up company info without creating anything
@@ -227,7 +212,6 @@ router.post('/:ticker/discover', async (req: Request, res: Response) => {
 
   if (ingested.length > 0 || queued.length > 0) {
     const qList = [...ingested, ...queued].map(r => r.quarter).join(', ');
-    notify(`🔍 *${ticker}* — ${ingested.length} ingested · ${queued.length} queued\nQuarters: ${qList}`);
     const { subject, html } = discoveryEmail(ticker, ingested.length + queued.length, qList.split(', '));
     sendEmail(subject, html).catch(() => {});
   }

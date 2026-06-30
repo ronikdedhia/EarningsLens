@@ -5,7 +5,6 @@ import { upsertChunks, ensureCollection, type ChunkPayload } from '../services/q
 import { scoreBatch } from '../services/sentiment.service';
 import { isQuarterIngested, markIngested, saveSentimentScore } from '../services/turso.service';
 import { parseSpeakers } from '../utils/speaker-parser';
-import { notify } from '../services/telegram.service';
 import { sendEmail, ingestionEmail } from '../services/email.service';
 import { extractPromisesForQuarter, resolvePromisesForQuarter } from '../services/promises.service';
 import { scanAndSaveRedFlags } from '../services/redflags.service';
@@ -93,8 +92,6 @@ async function processTranscriptNode(state: typeof IngestAnnotation.State) {
     scanAndSaveRedFlags(t, quarter),
   ]).catch(() => {});
 
-  const summary = `✅ *${t} ${state.quarter}* ingested\n${speakerTurns.length} speaker turns · ${points.length} chunks`;
-  notify(summary);
   const { subject, html } = ingestionEmail(t, state.quarter, speakerTurns.length, points.length);
   sendEmail(subject, html).catch(() => {});
 

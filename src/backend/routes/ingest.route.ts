@@ -1,7 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { Client } from '@upstash/qstash';
 import { ingestGraph } from '../graphs/ingest.graph';
-import { notify } from '../services/telegram.service';
 
 const router = Router();
 
@@ -44,8 +43,7 @@ router.post('/', async (req: Request, res: Response) => {
       url:  `${process.env.BACKEND_PUBLIC_URL}/api/ingest/worker`,
       body: req.body,
     });
-    notify(`⏳ *${String(ticker).toUpperCase()} ${quarter}* queued for ingestion`);
-    return res.status(202).json({
+return res.status(202).json({
       message: `${String(ticker).toUpperCase()} ${quarter} queued — processing in background`,
       queued:  true,
     });

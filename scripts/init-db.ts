@@ -204,17 +204,15 @@ const CREATE_INDEXES = [
 // ── Seed companies ────────────────────────────────────────────────────────────
 
 const SEED_COMPANIES = [
-  `INSERT OR IGNORE INTO companies (ticker, name, sector) VALUES
-    ('HDFCBANK',   'HDFC Bank Ltd.',           'Banking'),
-    ('ICICIBC',    'ICICI Bank Ltd.',           'Banking'),
-    ('AXISBANK',   'Axis Bank Ltd.',            'Banking'),
-    ('KOTAKBANK',  'Kotak Mahindra Bank Ltd.',  'Banking'),
-    ('SBIN',       'State Bank of India',       'Banking'),
-    ('INFY',       'Infosys Ltd.',              'Technology'),
-    ('TCS',        'Tata Consultancy Services', 'Technology'),
-    ('WIPRO',      'Wipro Ltd.',                'Technology'),
-    ('RELIANCE',   'Reliance Industries Ltd.',  'Conglomerate'),
-    ('BAJFINANCE', 'Bajaj Finance Ltd.',        'NBFC')`,
+  `INSERT OR IGNORE INTO companies (ticker, name, sector, bse_code) VALUES
+    ('WOCKPHARMA', 'Wockhardt Ltd.',               'Pharma',          '532300'),
+    ('RPOWER',     'Reliance Power Ltd.',          'Power',           '532939'),
+    ('IONEXCHANG', 'Ion Exchange (India) Ltd.',    'Water Treatment', '500213'),
+    ('SAMMAANCAP', 'Sammaan Capital Ltd.',         'NBFC',            '535789'),
+    ('SHAKTIPUMP', 'Shakti Pumps (India) Ltd.',    'Capital Goods',   '531431'),
+    ('TRUALT',     'TruAlt Bioenergy Ltd.',        'Energy',          '544545'),
+    ('MMTC',       'MMTC Ltd.',                    'Trading',         '513377'),
+    ('PSPPROJECT', 'PSP Projects Ltd.',            'Construction',    '540544')`,
 ];
 
 async function main() {

@@ -28,6 +28,10 @@ function insightModel() {
   }).withStructuredOutput(FilingInsightsSchema);
 }
 
+// Filings scoring at/above this are worth a PDF fetch + LLM summary.
+// Model's own isImportant boolean is ignored — derived from score for a single, tunable cutoff.
+const IMPORTANCE_THRESHOLD = 3;
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface ClassifiedFiling extends RawBseFiling {
@@ -86,10 +90,12 @@ async function classifyNode(state: typeof DailyFilingsAnnotation.State) {
           `You are a financial analyst assistant. Classify the importance of BSE stock exchange filings.
 Score 1–5 where:
 5 = Financial results, major acquisition, CEO/MD change, regulatory action, profit warning
-4 = Investor presentation with guidance, significant board decision, dividend announcement
-3 = Minor operational update, routine board meeting outcome
-2 = Administrative filing, change of registered office, statutory compliance
-1 = Trivial/routine regulatory filing with no investor relevance
+4 = Investor presentation WITH actual guidance/numbers, significant board decision, dividend announcement
+3 = Material press release (new contract, partnership, product launch), ESOP/allotment with real numbers, minor operational update, routine board meeting outcome
+2 = Administrative filing, change of registered office, meeting/call SCHEDULE intimation with no content yet, statutory compliance
+1 = Trivial/routine regulatory filing with no investor relevance (boilerplate Reg 30 disclosures, generic compliance certificates)
+
+Score based on likely investor relevance, not just how generic the BSE title sounds — many genuinely material filings (e.g. a large new contract) get filed under bland regulatory titles.
 
 Also classify into: earnings | board | investor_meet | press_release | management_change | acquisition | regulatory | other`
         ),
@@ -99,7 +105,7 @@ Also classify into: earnings | board | investor_meet | press_release | managemen
       ]);
       classified.push({
         ...filing,
-        isImportant: result.isImportant,
+        isImportant: result.score >= IMPORTANCE_THRESHOLD,
         importance:  result.score,
         filingCat:   result.filingCategory as typeof FILING_CATEGORIES[number],
         reason:      result.reason,
@@ -216,6 +222,13 @@ async function saveNode(state: typeof DailyFilingsAnnotation.State) {
   return { savedCount };
 }
 
+function truncateTitle(title: string, max = 100): string {
+  if (title.length <= max) return title;
+  const cut = title.slice(0, max);
+  const lastSpace = cut.lastIndexOf(' ');
+  return (lastSpace > max * 0.5 ? cut.slice(0, lastSpace) : cut) + '…';
+}
+
 function groupByTicker<T extends { ticker: string }>(items: T[]): Map<string, T[]> {
   const map = new Map<string, T[]>();
   for (const item of items) {
@@ -235,7 +248,7 @@ async function notifyNode(state: typeof DailyFilingsAnnotation.State) {
     const grouped = groupByTicker(state.allScraped ?? []);
     const sections: string[] = [];
     for (const [ticker, filings] of grouped) {
-      const titles = filings.map(f => `  · ${f.title.slice(0, 70)}`).join('\n');
+      const titles = filings.map(f => `  · ${truncateTitle(f.title)}`).join('\n');
       sections.push(`*${ticker}* (${filings.length})\n${titles}`);
     }
     const CHUNK = 8; // tickers per message
@@ -256,7 +269,7 @@ async function notifyNode(state: typeof DailyFilingsAnnotation.State) {
     const grouped = groupByTicker(state.processed);
     const sections: string[] = [];
     for (const [ticker, filings] of grouped) {
-      const titles = filings.map(f => `  · ${f.title.slice(0, 70)}`).join('\n');
+      const titles = filings.map(f => `  · ${truncateTitle(f.title)}`).join('\n');
       sections.push(`*${ticker}* (${filings.length})\n${titles}`);
     }
     notify(
@@ -274,7 +287,7 @@ async function notifyNode(state: typeof DailyFilingsAnnotation.State) {
     const lines = filings.map(f => {
       const emoji = f.importance >= 5 ? '🔴' : f.importance >= 4 ? '🟡' : '🟢';
       const summary = f.insights?.summary ? `\n    _${f.insights.summary.slice(0, 120)}_` : '';
-      return `  ${emoji} ${f.title.slice(0, 70)}${summary}`;
+      return `  ${emoji} ${truncateTitle(f.title)}${summary}`;
     });
     sections.push(`*${ticker}* (${filings.length})\n${lines.join('\n')}`);
   }

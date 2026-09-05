@@ -14,10 +14,10 @@ EarningsLens ingests BSE earnings call transcripts, embeds them via Voyage AI or
 
 | Feature | What it answers |
 |---------|----------------|
-| **Research** | "What did the HDFC Bank CFO say about NIM in Q3FY25?" — RAG with citations |
+| **Research** | "What did the CFO say about NIM in Q3FY25?" — RAG with citations |
 | **Sector Pulse** | "What are the top 5 themes across all BFSI companies this quarter?" |
 | **Red Flag Scanner** | "Which companies used evasive language, exceptional charges, or adversarial Q&A?" |
-| **Quarter Diff** | "What did HDFC Bank *stop* talking about between Q3 and Q4?" |
+| **Quarter Diff** | "What did management *stop* talking about between Q3 and Q4?" |
 | **Guidance Promises** | "Did management deliver on what they promised last quarter?" |
 | **Management Quality** | "Is this CFO getting more vague over time?" |
 | **Sentiment** | "Is management tone turning negative before the numbers confirm it?" |
@@ -38,21 +38,23 @@ Browser (Next.js 14 App Router)
   ├── /promises      → Promises      (auth required)
   ├── /diff          → Quarter Diff  (auth required)
   ├── /redflags      → Red Flags     (auth required)
-  └── /sector        → Sector Pulse  (auth required)
+  ├── /sector        → Sector Pulse  (auth required)
+  └── /daily-feed    → Daily Filings (auth required)
         │
         ▼ fetch
 Express Backend (port 3001)
-  ├── /api/companies   — company registry + BSE discovery
-  ├── /api/ingest      — PDF ingestion pipeline
-  ├── /api/query       — RAG query endpoint
-  ├── /api/sentiment   — sentiment history
-  ├── /api/insights    — AI insight generation
-  ├── /api/management  — management quality scoring
-  ├── /api/promises    — guidance promise extraction + resolution
-  ├── /api/redflags    — red flag scanning + site-wide feed
-  ├── /api/diff        — quarter-over-quarter transcript diff
-  ├── /api/sector      — sector narrative map
-  └── /api/quarters    — quarter index
+  ├── /api/companies      — company registry + BSE discovery
+  ├── /api/ingest         — PDF ingestion pipeline
+  ├── /api/query          — RAG query endpoint
+  ├── /api/sentiment      — sentiment history
+  ├── /api/insights       — AI insight generation
+  ├── /api/management     — management quality scoring
+  ├── /api/promises       — guidance promise extraction + resolution
+  ├── /api/redflags       — red flag scanning + site-wide feed
+  ├── /api/diff           — quarter-over-quarter transcript diff
+  ├── /api/sector         — sector narrative map
+  ├── /api/daily-filings  — daily BSE filing scrape + digest
+  └── /api/quarters       — quarter index
         │
         ├── Turso (LibSQL)   — structured/relational data
         └── Qdrant           — vector embeddings + semantic search
@@ -154,6 +156,14 @@ POST /api/ingest
 - Free accounts: 2 companies max (tracked in `user_companies`)
 - Telegram + SendGrid notification on discovery + ingestion
 
+### Daily Filings `/daily-feed` ✦ NEW
+- Scrapes BSE corporate announcements for every tracked company on a rolling 24h window
+- Groq (`llama-3.1-8b-instant`) scores each filing's investor relevance 1–5 and tags a category (earnings / board / investor_meet / press_release / management_change / acquisition / regulatory / other)
+- Filings scoring at or above a configurable importance threshold get their PDF fetched and summarized by a second Groq pass — 1–2 sentence summary, key points, sentiment, and "what to watch next"
+- Lower-scoring filings are still recorded, just without the PDF fetch — kept lightweight for routine/administrative disclosures
+- Telegram digest grouped by ticker, chunked to stay under message limits, deduped against previously-seen filings by PDF URL
+- Tracked companies are fully configurable — add or remove tickers via the `companies` table (`/api/companies`); the scraper picks up whatever is currently registered, no code change needed
+
 ### Overview `/`
 - Company list grouped by sector with inline sentiment badge (latest quarter)
 - Stats bar: total companies · quarters processed · coverage %
@@ -177,7 +187,7 @@ Each ~512-token chunk becomes a vector with payload. Vector dimensions depend on
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `ticker` | keyword | NSE ticker (`HDFCBANK`) |
+| `ticker` | keyword | NSE ticker symbol |
 | `quarter` | keyword | Indian fiscal quarter (`Q2FY25`) |
 | `fiscalYear` | integer | FY end year |
 | `speakerRole` | keyword | `CEO` / `CFO` / `Analyst` / `Other` |
@@ -202,6 +212,7 @@ Also: `query_log` collection — every RAG query as a vector for semantic dedup.
 **`sector_narratives`** — cached sector theme analysis per sector + quarter  
 **`users`** — Clerk user ID + is_premium flag  
 **`user_companies`** — per-user company tracking for free-tier limit  
+**`daily_filings`** — scraped BSE announcements: title, category, importance score, AI insights, dedup'd by PDF URL  
 
 ---
 
@@ -226,6 +237,7 @@ Every significant event triggers Telegram + SendGrid:
 | AI insights generated | `insights.route.ts` |
 | BSE PDF discovery complete | `companies.route.ts` |
 | Transcript ingested | `ingest.route.ts` |
+| Daily BSE filing digest | `daily-filings.graph.ts` |
 
 ---
 
@@ -395,4 +407,8 @@ npm run ingest           # Bulk ingest pending queue from quarter_index
 | GET | `/api/insights/:ticker` | Stored insights + Q&A logs |
 | POST | `/api/insights/generate/:ticker` | Generate / regenerate AI insights |
 | GET | `/api/quarters` | Quarter index |
+| GET | `/api/daily-filings` | Daily filings feed (paginated, filterable) |
+| GET | `/api/daily-filings/latest-date` | Most recent scrape date |
+| GET | `/api/daily-filings/status` | Live scrape stage/progress |
+| POST | `/api/daily-filings/run` | Trigger a scrape run (QStash-verified) |
 | GET | `/health` | Backend health check |

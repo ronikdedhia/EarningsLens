@@ -5,10 +5,9 @@ const BSE_API = 'https://api.bseindia.com/BseIndiaAPI/api';
 const REFERER  = 'https://www.bseindia.com/';
 
 const STATIC_BSE_CODES: Record<string, string> = {
-  HDFCBANK:   '500180', ICICIBC:    '532174', ICICIBANK:  '532174',
-  AXISBANK:   '532215', KOTAKBANK:  '500247', SBIN:       '500112',
-  INFY:       '500209', TCS:        '532540', WIPRO:      '507685',
-  RELIANCE:   '500325', BAJFINANCE: '500034',
+  WOCKPHARMA: '532300', RPOWER:     '532939', IONEXCHANG: '500213',
+  SAMMAANCAP: '535789', SHAKTIPUMP: '531431', TRUALT:     '544545',
+  MMTC:       '513377', PSPPROJECT: '540544',
 };
 
 export interface RawBseFiling {

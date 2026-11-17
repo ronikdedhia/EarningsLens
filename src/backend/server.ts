@@ -33,7 +33,7 @@ import { registerBriefsSchedule } from './routes/keepalive.route';
 import { runDailyJobs, runEveningJobs } from './services/jobs.service';
 import { modelId } from './services/llm';
 import { telegramRouter } from './routes/telegram.route';
-import { registerWebhook } from './services/bot.service';
+import { registerWebhook, botStatus } from './services/bot.service';
 import { getSystemStats, getTodayQueryCount } from './services/turso.service';
 
 const app = express();
@@ -80,6 +80,7 @@ app.get('/version', (_, res) => res.json({
   commit:    process.env.RENDER_GIT_COMMIT ?? null,
   startedAt: STARTED_AT,
   models:    { main: modelId('main'), fast: modelId('fast') },
+  bot:       botStatus,
   configured: Object.fromEntries(
     ['GROQ_API_KEY', 'CLERK_SECRET_KEY', 'TURSO_DATABASE_URL', 'QDRANT_URL', 'VOYAGE_API_KEY',
      'TELEGRAM_ACCESS_TOKEN', 'TELEGRAM_CHAT_ID', 'QSTASH_CURRENT_SIGNING_KEY', 'FRONTEND_URL']
@@ -104,7 +105,8 @@ app.listen(PORT, async () => {
   setDailyReportHandler(sendDailyReport);
   registerKeepaliveSchedule().catch(console.error);
   // Only the deployed server owns the webhook; a local dev server must not steal it.
-  if (process.env.RENDER || process.env.TELEGRAM_REGISTER_WEBHOOK === '1') {
+  // RENDER_GIT_COMMIT is set on every Render deploy (RENDER alone isn't guaranteed).
+  if (process.env.RENDER || process.env.RENDER_GIT_COMMIT || process.env.TELEGRAM_REGISTER_WEBHOOK === '1') {
     registerWebhook().catch(err => console.error('[bot] webhook registration failed:', String(err)));
   }
 

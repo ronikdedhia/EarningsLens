@@ -201,14 +201,27 @@ export async function handleUpdate(update: Update): Promise<void> {
   }
 }
 
+/** Last registration outcome, shown on /version. */
+export const botStatus: { webhook: string; at: string | null } = { webhook: 'not attempted', at: null };
+
 /** Points Telegram at /api/telegram/webhook and publishes the command menu. Idempotent. */
 export async function registerWebhook(): Promise<void> {
   const base = process.env.BACKEND_PUBLIC_URL?.replace(/\/$/, '');
-  if (!process.env.TELEGRAM_ACCESS_TOKEN || !base) return;
+  if (!process.env.TELEGRAM_ACCESS_TOKEN || !base) {
+    botStatus.webhook = 'skipped: TELEGRAM_ACCESS_TOKEN or BACKEND_PUBLIC_URL missing';
+    return;
+  }
   const url = `${base}/api/telegram/webhook`;
-  const info = await telegramApi<{ url?: string }>('getWebhookInfo');
-  // Re-set every boot: cheap, and refreshes the secret if TELEGRAM_WEBHOOK_SECRET changed.
-  await telegramApi('setWebhook', { url, secret_token: webhookSecret(), allowed_updates: ['message'], drop_pending_updates: false });
-  await telegramApi('setMyCommands', { commands: COMMANDS });
-  console.log(`[bot] webhook ${info.url === url ? 'refreshed' : 'registered'} → ${url}`);
+  try {
+    // Re-set every boot: cheap, and refreshes the secret if TELEGRAM_WEBHOOK_SECRET changed.
+    await telegramApi('setWebhook', { url, secret_token: webhookSecret(), allowed_updates: ['message'], drop_pending_updates: false });
+    await telegramApi('setMyCommands', { commands: COMMANDS });
+    botStatus.webhook = `registered → ${url}`;
+    console.log(`[bot] webhook registered → ${url}`);
+  } catch (err) {
+    botStatus.webhook = `failed: ${String((err as Error).message ?? err).slice(0, 150)}`;
+    throw err;
+  } finally {
+    botStatus.at = new Date().toISOString();
+  }
 }

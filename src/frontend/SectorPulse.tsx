@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { apiFetch } from '@/frontend/api';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
@@ -244,7 +245,7 @@ export default function SectorPulse() {
   // Load sector list once
   useEffect(() => {
     if (sectorsLoaded) return;
-    fetch(`${API}/api/sector/sectors`)
+    apiFetch(`${API}/api/sector/sectors`)
       .then(r => r.json())
       .then(d => { setSectors(d.sectors ?? []); setSectorsLoaded(true); })
       .catch(() => {});
@@ -259,7 +260,7 @@ export default function SectorPulse() {
     setError('');
     if (!s) return;
     try {
-      const res  = await fetch(`${API}/api/sector/quarters?sector=${encodeURIComponent(s)}`);
+      const res  = await apiFetch(`${API}/api/sector/quarters?sector=${encodeURIComponent(s)}`);
       const data = await res.json();
       const qs: string[] = data.quarters ?? [];
       setQuarters(qs);
@@ -276,7 +277,7 @@ export default function SectorPulse() {
     setNarrative(null);
     try {
       const url = `${API}/api/sector?sector=${encodeURIComponent(sector)}&quarter=${encodeURIComponent(quarter)}${forceRefresh ? '&refresh=1' : ''}`;
-      const res  = await fetch(url);
+      const res  = await apiFetch(url);
       if (!res.ok) {
         const d = await res.json();
         setError(d.error ?? 'Analysis failed.');
@@ -286,7 +287,7 @@ export default function SectorPulse() {
       setNarrative(data);
 
       // Load evolution history
-      const evRes  = await fetch(`${API}/api/sector/evolution?sector=${encodeURIComponent(sector)}`);
+      const evRes  = await apiFetch(`${API}/api/sector/evolution?sector=${encodeURIComponent(sector)}`);
       const evData = await evRes.json();
       setEvolution((evData.history ?? []).filter((n: SectorNarrative) => n.quarter !== quarter));
     } catch {

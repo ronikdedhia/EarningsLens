@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { apiFetch } from '@/frontend/api';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
@@ -153,7 +154,7 @@ function CompanyDrawer({
 
   useEffect(() => {
     if (cached) return;
-    fetch(`${API}/api/insights/${ticker}`)
+    apiFetch(`${API}/api/insights/${ticker}`)
       .then(r => r.json())
       .then(async (d) => {
         const logs = (d.queryLogs ?? []).filter(
@@ -166,7 +167,7 @@ function CompanyDrawer({
           setLoaded(true);
         } else {
           setGenerating(true);
-          const gen = await fetch(`${API}/api/insights/generate/${ticker}`, { method: 'POST' });
+          const gen = await apiFetch(`${API}/api/insights/generate/${ticker}`, { method: 'POST' });
           const gd  = await gen.json();
           const newInsights = gd.insights ?? [];
           setInsights(newInsights);
@@ -277,7 +278,7 @@ export default function CompaniesPanel() {
 
   const fetchData = useCallback(async () => {
     try {
-      const res  = await fetch(`${API}/api/companies`);
+      const res  = await apiFetch(`${API}/api/companies`);
       const data = await res.json();
       setCompanies(data.companies ?? []);
       setStats(data.stats ?? null);
@@ -295,7 +296,7 @@ export default function CompaniesPanel() {
     companies.forEach(c => {
       if (loadedSentiment.current.has(c.ticker)) return;
       loadedSentiment.current.add(c.ticker);
-      fetch(`${API}/api/sentiment?ticker=${c.ticker}`)
+      apiFetch(`${API}/api/sentiment?ticker=${c.ticker}`)
         .then(r => r.json())
         .then(d => {
           const history: { quarter: string; sentiment: string; score: number }[] = d.history ?? [];

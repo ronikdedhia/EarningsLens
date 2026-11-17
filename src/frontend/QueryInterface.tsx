@@ -6,6 +6,7 @@ import SentimentChart from './SentimentChart';
 import CitationList from './CitationList';
 import { useCompanyTickers } from './hooks/useCompanyTickers';
 import { useAvailableQuarters } from './hooks/useAvailableQuarters';
+import { apiFetch } from '@/frontend/api';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 const HISTORY_KEY = 'earningslens:query_history';
@@ -97,8 +98,8 @@ export default function QueryInterface() {
       if (speakerRole) payload.speakerRole = speakerRole;
 
       const [queryRes, sentimentRes] = await Promise.all([
-        fetch(`${API}/api/query`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
-        ticker ? fetch(`${API}/api/sentiment?ticker=${ticker}`) : Promise.resolve(null),
+        apiFetch(`${API}/api/query`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+        ticker ? apiFetch(`${API}/api/sentiment?ticker=${ticker}`) : Promise.resolve(null),
       ]);
 
       if (!queryRes.ok) { const err = await queryRes.json(); throw new Error(err.error ?? 'Query failed'); }

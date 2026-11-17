@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import SentimentChart from './SentimentChart';
+import { apiFetch } from '@/frontend/api';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
@@ -14,7 +15,7 @@ export default function SentimentExplorer() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch(`${API}/api/companies`)
+    apiFetch(`${API}/api/companies`)
       .then(r => r.json())
       .then(async (d) => {
         const tickers: string[] = (d.companies ?? [])
@@ -23,7 +24,7 @@ export default function SentimentExplorer() {
 
         const results = await Promise.all(
           tickers.map(ticker =>
-            fetch(`${API}/api/sentiment?ticker=${ticker}`)
+            apiFetch(`${API}/api/sentiment?ticker=${ticker}`)
               .then(r => r.json())
               .then(j => ({ ticker, history: j.history ?? [] }))
               .catch(() => ({ ticker, history: [] }))

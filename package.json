@@ -12,9 +12,15 @@
     "start:backend": "node dist/backend/server.js",
     "lint": "next lint",
     "db:init": "tsx scripts/init-db.ts",
-    "ingest": "tsx scripts/bulk-ingest.ts"
+    "ingest": "tsx scripts/bulk-ingest.ts",
+    "watchlist": "tsx scripts/update-watchlist.ts",
+    "backfill": "tsx scripts/backfill.ts",
+    "check-deploy": "tsx scripts/check-deploy.ts",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "typecheck": "tsc --project tsconfig.backend.json --noEmit && tsc --project tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@clerk/backend": "^1.14.1",
     "@clerk/nextjs": "^5.3.0",
     "@langchain/core": "^1.1.48",
     "@langchain/groq": "^1.2.1",

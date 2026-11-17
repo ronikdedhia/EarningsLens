@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { apiFetch } from '@/frontend/api';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
@@ -153,7 +154,7 @@ export default function ManagementQuality() {
   const [error,     setError]     = useState('');
 
   useEffect(() => {
-    fetch(`${API}/api/companies`)
+    apiFetch(`${API}/api/companies`)
       .then(r => r.json())
       .then(d => {
         const ingested: CompanyInfo[] = (d.companies ?? []).filter(
@@ -170,7 +171,7 @@ export default function ManagementQuality() {
     setLoading(true);
     setScores([]);
     setError('');
-    fetch(`${API}/api/management?ticker=${ticker}`)
+    apiFetch(`${API}/api/management?ticker=${ticker}`)
       .then(r => r.json())
       .then(d => setScores([...(d.scores ?? [])].reverse()))
       .catch(() => setError('Failed to load scores.'))
@@ -182,7 +183,7 @@ export default function ManagementQuality() {
     setAnalyzing(true);
     setError('');
     try {
-      const res  = await fetch(`${API}/api/management/analyze`, {
+      const res  = await apiFetch(`${API}/api/management/analyze`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ ticker }),

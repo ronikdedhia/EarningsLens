@@ -3,6 +3,7 @@
 import { useState, useRef } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { useCompanyTickers } from './hooks/useCompanyTickers';
+import { apiFetch } from '@/frontend/api';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
@@ -39,7 +40,7 @@ export default function KeywordTracker() {
     try {
       const params = new URLSearchParams({ q, topK: '50' });
       if (t) params.set('ticker', t);
-      const res = await fetch(`${API}/api/queries/keyword?${params}`);
+      const res = await apiFetch(`${API}/api/queries/keyword?${params}`);
       if (!res.ok) throw new Error('Search failed');
       const json = await res.json();
       setData(json.data ?? []);

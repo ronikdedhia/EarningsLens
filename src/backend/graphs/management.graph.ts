@@ -51,6 +51,7 @@ async function analyzeNode(state: typeof ManagementAnnotation.State) {
   }
 
   const results: ManagementScoreRow[] = [];
+  const failed: string[] = [];
 
   for (const quarter of sorted) {
     const mgmtText = textCache[quarter];
@@ -63,10 +64,18 @@ async function analyzeNode(state: typeof ManagementAnnotation.State) {
       if (!textCache[prevLabel]) textCache[prevLabel] = prevText;
     }
 
-    const score = await scoreManagementQuality(
-      state.ticker, quarter, mgmtText,
-      prevText || undefined, prevLabel || undefined,
-    );
+    let score: Awaited<ReturnType<typeof scoreManagementQuality>>;
+    try {
+      score = await scoreManagementQuality(
+        state.ticker, quarter, mgmtText,
+        prevText || undefined, prevLabel || undefined,
+      );
+    } catch (err) {
+      // Skip rather than save a placeholder 50/50/50 as if it were a real score.
+      console.error(`[management] ${state.ticker} ${quarter} failed:`, String(err).slice(0, 200));
+      failed.push(quarter);
+      continue;
+    }
 
     const composite = Math.round((score.confidence + score.transparency + score.followThrough) / 3);
     const rowData: Omit<ManagementScoreRow, 'id' | 'createdAt'> = {
@@ -86,6 +95,9 @@ async function analyzeNode(state: typeof ManagementAnnotation.State) {
     results.push({ ...rowData, id: 0, createdAt: new Date().toISOString() });
   }
 
+  if (!results.length && failed.length) {
+    throw new Error(`Management scoring failed for ${failed.join(', ')}`);
+  }
   return { result: results };
 }
 

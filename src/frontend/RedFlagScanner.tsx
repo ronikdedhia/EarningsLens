@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useCallback } from 'react';
+import { apiFetch } from '@/frontend/api';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
@@ -138,7 +139,7 @@ export default function RedFlagScanner() {
     setLoading(true);
     setError('');
     try {
-      const res  = await fetch(`${API}/api/redflags/feed?days=7`);
+      const res  = await apiFetch(`${API}/api/redflags/feed?days=7`);
       const data = await res.json();
       setFeed(data.flags ?? []);
       setFeedLoaded(true);
@@ -153,7 +154,7 @@ export default function RedFlagScanner() {
     setLoading(true);
     setError('');
     try {
-      const res  = await fetch(`${API}/api/redflags?ticker=${encodeURIComponent(t)}`);
+      const res  = await apiFetch(`${API}/api/redflags?ticker=${encodeURIComponent(t)}`);
       const data = await res.json();
       setFlags(data.flags ?? []);
     } catch {
@@ -176,7 +177,7 @@ export default function RedFlagScanner() {
     if (!quarter || !ticker) return;
     setScanning(true);
     try {
-      const res  = await fetch(`${API}/api/redflags/scan`, {
+      const res  = await apiFetch(`${API}/api/redflags/scan`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ ticker, quarter: quarter.trim() }),

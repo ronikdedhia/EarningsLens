@@ -157,12 +157,24 @@ POST /api/ingest
 - Telegram + SendGrid notification on discovery + ingestion
 
 ### Daily Filings `/daily-feed` ✦ NEW
-- Scrapes BSE corporate announcements for every tracked company on a rolling 24h window
-- Groq (`llama-3.1-8b-instant`) scores each filing's investor relevance 1–5 and tags a category (earnings / board / investor_meet / press_release / management_change / acquisition / regulatory / other)
+- Scrapes NSE corporate announcements for every tracked company on a rolling 24h window, with the BSE API as a fallback (the BSE API has answered every request with an Akamai 403 since at least Nov 2026; BSE PDFs on www.bseindia.com still download)
+- If a company can't be fetched from either exchange, the Telegram digest names it and the error (e.g. `NSE HTTP 403; BSE HTTP 403`) instead of reporting zero filings
+- Groq (`GROQ_FAST_MODEL`, default `openai/gpt-oss-20b`) scores each filing's investor relevance 1–5 and tags a category (earnings / board / investor_meet / press_release / management_change / acquisition / regulatory / other)
 - Filings scoring at or above a configurable importance threshold get their PDF fetched and summarized by a second Groq pass — 1–2 sentence summary, key points, sentiment, and "what to watch next"
 - Lower-scoring filings are still recorded, just without the PDF fetch — kept lightweight for routine/administrative disclosures
 - Telegram digest grouped by ticker, chunked to stay under message limits, deduped against previously-seen filings by PDF URL
 - Tracked companies are fully configurable — add or remove tickers via the `companies` table (`/api/companies`); the scraper picks up whatever is currently registered, no code change needed
+- The default watchlist lives in `src/backend/watchlist.ts` (WOCKPHARMA, IONEXCHANG, TRUALT, PSPPROJECT, MOREPENLAB, RUBICON, IVALUE, VENKEYS, SUNPHARMA). `npm run watchlist` makes the database match it.
+- Daily job at 16:00 IST runs filings, then insider/deal signals, results, and price reactions; each step reports its own failures to Telegram
+
+### Scorecard `/scorecard` ✦ NEW
+All from NSE's public JSON endpoints, no LLM involved:
+- **Quarterly numbers** — revenue, EBITDA, PAT, EPS and margins from the results XBRL each company files (NSE "Integrated Filing", periods from Mar-2025), with QoQ and YoY. EBITDA = PBT − exceptional items + finance costs + depreciation − other income. A Telegram message goes out when a new quarter is filed, listing the revenue/margin promises management made in the previous quarters. Promise resolution also reads these figures.
+- **Insider and deal activity** — insider trades and pledges (PIT Reg 7 XBRL), SAST Reg 29 disclosures, the promoter pledge snapshot, and bulk/block deals. New rows go to Telegram daily; promoter selling or pledging, rising pledge %, invoked pledges and all bulk/block deals are marked ⚠️.
+- **Price reactions** — the stock's move and NIFTY 50's move 1, 5 and 20 sessions after every filing, red flag and signal, summarised by filing importance, flag severity and signal type. Returns compound NSE's adjusted previous close, so splits and bonuses don't distort them. Events filed after 15:30 IST are measured from that day's close; earlier or untimed events from the previous close. Red flags are measured from the transcript's NSE filing time.
+- **Results-day brief** — board meetings are synced from NSE; at 19:00 IST the evening before a results meeting, Telegram gets the last quarter's numbers, the promises from the last call, older open promises, red flags, "what to watch" from recent filings, and 90 days of insider/deal activity.
+
+API: `GET /api/market/reactions/summary`, `/reactions`, `/financials?ticker=`, `/signals?ticker=&days=`, `/calendar`; `POST /api/market/briefs/run` (QStash).
 
 ### Overview `/`
 - Company list grouped by sector with inline sentiment badge (latest quarter)
@@ -222,7 +234,8 @@ Powered by **Clerk** (`@clerk/nextjs` v5).
 
 - `/` — public, no auth required
 - All other routes — inline Clerk sign-in component (no redirect)
-- Free users — 2 company limit in Coverage (enforced at API level, 402 response)
+- Backend — every `/api` route requires a Clerk session token (`Authorization: Bearer`, attached by `src/frontend/api.ts`), except the read-only routes the public overview uses (`GET /api/companies`, `GET /api/insights/:ticker`, `GET /api/sentiment`) and the QStash-signed schedule/worker routes. See `src/backend/middleware/auth.ts`.
+- Free users — 2 company limit in Coverage (enforced at API level, 402 response; the user id comes from the verified token)
 - Premium users — `is_premium = 1` in `users` table (Stripe integration pending)
 
 ---
@@ -248,7 +261,7 @@ Every significant event triggers Telegram + SendGrid:
 | Frontend | Next.js 14 App Router, Tailwind CSS, Recharts |
 | Auth | Clerk (`@clerk/nextjs` v5) |
 | Backend | Express.js (TypeScript) |
-| LLM | Groq (`llama-3.1-8b-instant` default) |
+| LLM | Groq: `openai/gpt-oss-120b` (main), `openai/gpt-oss-20b` (fast tier). The Llama 3.x models were shut down on 2026-08-16. |
 | Embeddings | Voyage AI `voyage-finance-2` (1024-dim, primary) · HuggingFace `BAAI/bge-small-en-v1.5` (384-dim, fallback) |
 | Sentiment | Groq LLM classification (JSON-mode, financial domain) |
 | Reranking | Cohere `rerank-v3.5` (optional, RAG quality improvement) |
@@ -293,7 +306,7 @@ npm run dev
 | `QDRANT_API_KEY` | Qdrant API key |
 | `GROQ_API_KEY` | Groq API key |
 | `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk publishable key |
-| `CLERK_SECRET_KEY` | Clerk secret key |
+| `CLERK_SECRET_KEY` | Clerk secret key. Needed by **both** the frontend and the Express backend: the backend verifies the session token on every `/api` call and refuses requests in production if this is unset. |
 | `NEXT_PUBLIC_CLERK_SIGN_IN_URL` | Clerk sign-in path (set to `/sign-in`) |
 | `NEXT_PUBLIC_CLERK_SIGN_UP_URL` | Clerk sign-up path (set to `/sign-up`) |
 | `NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL` | Post sign-in redirect (set to `/`) |
@@ -304,7 +317,10 @@ npm run dev
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GROQ_MODEL` | `llama-3.1-8b-instant` | Groq model ID |
+| `GROQ_MODEL` | `openai/gpt-oss-120b` | Main Groq model (synthesis, red flags, promises, filing insights) |
+| `GROQ_FAST_MODEL` | `openai/gpt-oss-20b` | Cheap Groq model (sentiment, filing classification, diff digests) |
+| `GROQ_CONCURRENCY` | `2` | Max simultaneous Groq calls per process |
+| `ANALYSIS_WINDOW_CHARS` | `16000` | Window size when red flags, promises and diff read a whole transcript |
 | `VOYAGE_API_KEY` | — | Voyage AI key — enables `voyage-finance-2` embeddings (1024-dim). Requires Qdrant collection delete + full re-ingest when switching from HuggingFace. |
 | `COHERE_API_KEY` | — | Cohere key — enables reranking in RAG. Silently skipped if absent. |
 | `LLAMA_CLOUD_API_KEY` | — | LlamaParse key — better PDF extraction. Falls back to `pdf-parse`. |
@@ -342,7 +358,11 @@ npm run build            # Next.js production build (Vercel)
 npm run build:backend    # Compile Express backend to dist/ (Render)
 npm run start:backend    # Run compiled backend: node dist/backend/server.js
 npm run db:init          # Create/migrate all Turso tables (idempotent)
-npm run ingest           # Bulk ingest pending queue from quarter_index
+npm run ingest           # Bulk ingest pending queue from quarter_index (in-process, no server needed)
+npm run watchlist        # Dry run: DB vs src/backend/watchlist.ts; add -- --apply [--discover] to change it
+npm run backfill         # One-off history load: signals, results, board meetings, transcript dates, price reactions
+npm test                 # Unit tests (node:test via tsx)
+npm run typecheck        # Typecheck backend and frontend
 ```
 
 ---

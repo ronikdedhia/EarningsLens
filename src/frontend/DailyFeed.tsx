@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { apiFetch } from '@/frontend/api';
 
 interface FilingInsights {
   summary:    string;
@@ -152,7 +153,7 @@ export default function DailyFeed() {
       if (importantOnly)  params.set('importantOnly', 'true');
       params.set('limit', '200');
 
-      const res  = await fetch(`${API}/api/daily-filings?${params}`);
+      const res  = await apiFetch(`${API}/api/daily-filings?${params}`);
       const data = await res.json();
       setFilings(data.filings ?? []);
     } finally {
@@ -161,7 +162,7 @@ export default function DailyFeed() {
   }, [API, selectedDate, selectedTicker, importantOnly]);
 
   useEffect(() => {
-    fetch(`${API}/api/daily-filings/latest-date`)
+    apiFetch(`${API}/api/daily-filings/latest-date`)
       .then(r => r.json())
       .then(d => {
         if (d.date) setLatestDate(d.date);

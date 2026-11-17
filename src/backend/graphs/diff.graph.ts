@@ -1,7 +1,8 @@
 import { Annotation, StateGraph, START, END } from '@langchain/langgraph';
 import { scrollChunks, type ChunkPayload } from '../services/qdrant.service';
-import { semanticDiff, type TranscriptDiffResult } from '../services/groq.service';
+import { semanticDiff, digestTranscript, type TranscriptDiffResult } from '../services/groq.service';
 import { getManagementScores } from '../services/turso.service';
+import { chunkBlocks, packWindows } from '../utils/transcript';
 
 export interface KeywordDelta {
   word:      string;
@@ -66,8 +67,8 @@ const DiffAnnotation = Annotation.Root({
 
 async function fetchChunksNode(state: typeof DiffAnnotation.State) {
   const [q1Chunks, q2Chunks] = await Promise.all([
-    scrollChunks({ ticker: state.ticker, quarters: [state.q1] }, 500),
-    scrollChunks({ ticker: state.ticker, quarters: [state.q2] }, 500),
+    scrollChunks({ ticker: state.ticker, quarters: [state.q1] }, 2000),
+    scrollChunks({ ticker: state.ticker, quarters: [state.q2] }, 2000),
   ]);
   return { q1Chunks, q2Chunks };
 }
@@ -104,9 +105,19 @@ async function computeDiffNode(state: typeof DiffAnnotation.State) {
   const q1ToneScore = s1 ? Math.round((s1.confidence + s1.transparency) / 2) : null;
   const q2ToneScore = s2 ? Math.round((s2.confidence + s2.transparency) / 2) : null;
 
-  const q1Text = q1Chunks.map(c => c.text).join('\n');
-  const q2Text = q2Chunks.map(c => c.text).join('\n');
-  const semantic = await semanticDiff(ticker, q1, q2, q1Text, q2Text);
+  // Digest each full quarter first; the old code compared the first 4,000
+  // characters of each (and scroll order is random, so not even the opening).
+  const emptySemantic = { droppedTopics: [], newTopics: [], phraseChanges: [], toneShift: '', summary: '' };
+  let semantic: TranscriptDiffResult = emptySemantic;
+  try {
+    const [q1Digest, q2Digest] = await Promise.all([
+      digestTranscript(ticker, q1, packWindows(chunkBlocks(q1Chunks))),
+      digestTranscript(ticker, q2, packWindows(chunkBlocks(q2Chunks))),
+    ]);
+    if (q1Digest && q2Digest) semantic = await semanticDiff(ticker, q1, q2, q1Digest, q2Digest);
+  } catch (err) {
+    console.error('[diff] digest failed:', String(err).slice(0, 200));
+  }
 
   const result: DiffResult = {
     q1, q2, ticker,

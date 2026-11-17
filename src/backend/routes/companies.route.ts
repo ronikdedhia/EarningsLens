@@ -6,13 +6,17 @@ import { getLastNQuarters } from '../utils/quarters';
 import { sendEmail, discoveryEmail } from '../services/email.service';
 import { fetchPdfText } from '../utils/pdf';
 import { qstashVerify } from '../middleware/qstash';
+import { currentUserId } from '../middleware/auth';
+import { enqueueOrRunIngestion } from '../services/ingestion.service';
 
 const router = Router();
 
 type DiscoverResult = { quarter: string; pdfUrl: string | null; status: string };
 
-// Core per-ticker discovery logic — shared by the discover route and refresh-all
-async function discoverAndIngestTicker(ticker: string, n: number, port: string): Promise<DiscoverResult[]> {
+// Core per-ticker discovery logic — shared by the discover route and refresh-all.
+// Ingestion is called in-process; it used to POST to this server over localhost,
+// which also needed BACKEND_PORT to match the port Render actually assigned.
+export async function discoverAndIngestTicker(ticker: string, n: number): Promise<DiscoverResult[]> {
   const quarters = getLastNQuarters(n);
   const results: DiscoverResult[] = [];
 
@@ -22,44 +26,51 @@ async function discoverAndIngestTicker(ticker: string, n: number, port: string):
       continue;
     }
 
-    let pdfUrl: string | null = null;
+    let found: Awaited<ReturnType<typeof discoverPdfUrl>> = null;
     try {
-      pdfUrl = await discoverPdfUrl(ticker, q.quarter);
+      found = await discoverPdfUrl(ticker, q.quarter);
     } catch (err) {
       results.push({ quarter: q.quarter, pdfUrl: null, status: `error: ${(err as Error).message}` });
       continue;
     }
 
-    if (!pdfUrl) {
+    if (!found) {
       results.push({ quarter: q.quarter, pdfUrl: null, status: 'not_found' });
       continue;
     }
+    const pdfUrl = found.pdfUrl;
+    // The real filing date beats the approximate results date for no-lookahead filtering.
+    const publishedAt = found.filedAt ? found.filedAt.slice(0, 10) : q.publishedAt;
 
-    await registerQuarter({ ticker, quarter: q.quarter, fiscalYear: q.fiscalYear, publishedAt: q.publishedAt, pdfUrl });
+    await registerQuarter({
+      ticker, quarter: q.quarter, fiscalYear: q.fiscalYear, publishedAt, pdfUrl, transcriptFiledAt: found.filedAt,
+    });
 
+    let transcript: string;
     try {
-      const transcript = await fetchPdfText(pdfUrl);
+      transcript = await fetchPdfText(pdfUrl);
       if (transcript.trim().length < 200) {
         results.push({ quarter: q.quarter, pdfUrl, status: 'queued (PDF too short — check URL)' });
         continue;
       }
-
-      const ingestRes = await fetch(`http://localhost:${port}/api/ingest`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticker, quarter: q.quarter, fiscalYear: q.fiscalYear, publishedAt: q.publishedAt, source: pdfUrl, transcript }),
-      });
-      const ingestData = await ingestRes.json() as { message?: string; skipped?: boolean; chunks?: number; error?: string };
-
-      if (!ingestRes.ok) {
-        results.push({ quarter: q.quarter, pdfUrl, status: `queued (ingest error: ${ingestData.error ?? ingestRes.status})` });
-      } else if (ingestData.skipped) {
-        results.push({ quarter: q.quarter, pdfUrl, status: 'already_ingested' });
-      } else {
-        results.push({ quarter: q.quarter, pdfUrl, status: `ingested (${ingestData.chunks} chunks)` });
-      }
     } catch (err) {
       results.push({ quarter: q.quarter, pdfUrl, status: `queued (download failed: ${(err as Error).message})` });
+      continue;
+    }
+
+    try {
+      const ingest = await enqueueOrRunIngestion({
+        ticker, quarter: q.quarter, fiscalYear: q.fiscalYear, publishedAt, source: pdfUrl, transcript,
+      });
+      if (ingest.skipped) {
+        results.push({ quarter: q.quarter, pdfUrl, status: 'already_ingested' });
+      } else if (ingest.queued) {
+        results.push({ quarter: q.quarter, pdfUrl, status: 'queued (processing in background)' });
+      } else {
+        results.push({ quarter: q.quarter, pdfUrl, status: `ingested (${ingest.chunks} chunks)` });
+      }
+    } catch (err) {
+      results.push({ quarter: q.quarter, pdfUrl, status: `queued (ingest error: ${(err as Error).message})` });
     }
   }
 
@@ -67,7 +78,7 @@ async function discoverAndIngestTicker(ticker: string, n: number, port: string):
 }
 
 // Runs in background — checks every tracked company for new quarters (last 2 only)
-export async function runRefreshAll(port: string): Promise<void> {
+export async function runRefreshAll(): Promise<void> {
   const companies = await listCompanies();
   if (!companies.length) return;
 
@@ -77,7 +88,7 @@ export async function runRefreshAll(port: string): Promise<void> {
   for (const company of companies) {
     try {
       // Only check last 2 quarters — historical quarters are seeded at add time
-      const results = await discoverAndIngestTicker(company.ticker, 2, port);
+      const results = await discoverAndIngestTicker(company.ticker, 2);
       results
         .filter(r => r.status.startsWith('ingested'))
         .forEach(r => newlyIngested.push(`${company.ticker} ${r.quarter}`));
@@ -116,9 +127,8 @@ router.get('/search', async (req: Request, res: Response) => {
 // Called weekly by QStash (Friday 12:00 IST) and node-cron fallback.
 // Responds 202 immediately and runs in background to avoid QStash timeout.
 router.post('/refresh-all', qstashVerify, async (_req: Request, res: Response) => {
-  const port = String(process.env.BACKEND_PORT ?? '3001');
   res.status(202).json({ status: 'started', message: 'Refresh running in background' });
-  runRefreshAll(port).catch(err => console.error('[refresh-all] crashed:', err));
+  runRefreshAll().catch(err => console.error('[refresh-all] crashed:', err));
 });
 
 // GET /api/companies/:ticker — look up company info without creating anything
@@ -155,7 +165,10 @@ const FREE_COMPANY_LIMIT = 2;
 
 // POST /api/companies/add-and-discover — single-step: look up name → create → discover
 router.post('/add-and-discover', async (req: Request, res: Response) => {
-  const { ticker, userId } = req.body as { ticker?: string; userId?: string };
+  const { ticker } = req.body as { ticker?: string };
+  // From the verified session token. It used to come from the request body, so
+  // leaving it out (or sending someone else's id) skipped the free-tier limit.
+  const userId = currentUserId(res);
   if (!ticker?.trim()) return res.status(400).json({ error: 'ticker is required' });
 
   const t = ticker.trim().toUpperCase();
@@ -190,32 +203,30 @@ router.post('/add-and-discover', async (req: Request, res: Response) => {
 
   if (userId) await trackUserCompany(userId, t);
 
-  // Kick off discovery (reuse internal logic via self-request)
-  const port = process.env.BACKEND_PORT ?? '3001';
-  const discRes = await fetch(`http://localhost:${port}/api/companies/${t}/discover`, { method: 'POST' });
-  const discData = await discRes.json() as { results?: unknown[] };
-
-  return res.json({ ticker: t, name, sector, results: discData.results ?? [] });
+  const results = await discoverAndNotify(t, 4);
+  return res.json({ ticker: t, name, sector, results });
 });
 
-// POST /api/companies/:ticker/discover
-// Discovers BSE transcript PDFs and immediately ingests them — URLs expire quickly.
-router.post('/:ticker/discover', async (req: Request, res: Response) => {
-  const ticker = req.params.ticker.toUpperCase();
-  const n      = parseInt(req.query.quarters as string) || 4;
-  const port   = String(process.env.BACKEND_PORT ?? '3001');
-
-  const results = await discoverAndIngestTicker(ticker, n, port);
+async function discoverAndNotify(ticker: string, n: number): Promise<DiscoverResult[]> {
+  const results = await discoverAndIngestTicker(ticker, n);
 
   const ingested = results.filter(r => r.status.startsWith('ingested'));
   const queued   = results.filter(r => r.status.startsWith('queued'));
 
   if (ingested.length > 0 || queued.length > 0) {
-    const qList = [...ingested, ...queued].map(r => r.quarter).join(', ');
-    const { subject, html } = discoveryEmail(ticker, ingested.length + queued.length, qList.split(', '));
+    const qList = [...ingested, ...queued].map(r => r.quarter);
+    const { subject, html } = discoveryEmail(ticker, ingested.length + queued.length, qList);
     sendEmail(subject, html).catch(() => {});
   }
+  return results;
+}
 
+// POST /api/companies/:ticker/discover
+// Discovers BSE transcript PDFs and immediately ingests them — URLs expire quickly.
+router.post('/:ticker/discover', async (req: Request, res: Response) => {
+  const ticker = req.params.ticker.toUpperCase();
+  const n      = Math.min(parseInt(req.query.quarters as string) || 4, 12);
+  const results = await discoverAndNotify(ticker, n);
   return res.json({ ticker, results });
 });
 

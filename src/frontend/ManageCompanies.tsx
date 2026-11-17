@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useUser } from '@clerk/nextjs';
+import { apiFetch } from '@/frontend/api';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
@@ -21,7 +21,6 @@ function statusColor(s: string): string {
 }
 
 export default function ManageCompanies() {
-  const { user }                = useUser();
   const [input, setInput]       = useState('');
   const [stage, setStage]       = useState<Stage>('idle');
   const [error, setError]       = useState('');
@@ -39,7 +38,7 @@ export default function ManageCompanies() {
     setStage('searching'); setError(''); setResults([]); setCompany(null); setImported(null);
 
     try {
-      const res  = await fetch(`${API}/api/companies/search?q=${encodeURIComponent(q)}`);
+      const res  = await apiFetch(`${API}/api/companies/search?q=${encodeURIComponent(q)}`);
       const data = await res.json();
 
       if (!res.ok) {
@@ -71,7 +70,7 @@ export default function ManageCompanies() {
   async function lookupTicker(ticker: string) {
     setStage('looking');
     try {
-      const res  = await fetch(`${API}/api/companies/${ticker}`);
+      const res  = await apiFetch(`${API}/api/companies/${ticker}`);
       const data = await res.json();
 
       if (!res.ok) { setStage('error'); setError(data.error ?? 'Lookup failed.'); return; }
@@ -90,10 +89,11 @@ export default function ManageCompanies() {
     setStage('importing');
 
     try {
-      const res  = await fetch(`${API}/api/companies/add-and-discover`, {
+      const res  = await apiFetch(`${API}/api/companies/add-and-discover`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticker: company.ticker, userId: user?.id }),
+        // The backend reads the user from the session token now, not the body.
+        body: JSON.stringify({ ticker: company.ticker }),
       });
       const data = await res.json();
 

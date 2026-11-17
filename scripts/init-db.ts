@@ -5,6 +5,7 @@
  */
 import * as dotenv from 'dotenv';
 import * as path from 'path';
+import { WATCHLIST } from '../src/backend/watchlist';
 
 dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
 
@@ -171,6 +172,76 @@ const CREATE_TABLES = [
     created_at   TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(pdf_url)
   )`,
+
+  // Daily closes from NSE. prev_close is NSE's adjusted previous close, so
+  // compounding close/prev_close stays correct across splits and bonuses.
+  // ticker 'NIFTY 50' holds the index.
+  `CREATE TABLE IF NOT EXISTS price_history (
+    ticker     TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    close      REAL NOT NULL,
+    prev_close REAL NOT NULL,
+    PRIMARY KEY (ticker, trade_date)
+  )`,
+
+  // Stock and NIFTY 50 move 1, 5 and 20 sessions after each filing, red flag or signal
+  `CREATE TABLE IF NOT EXISTS price_reactions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type  TEXT NOT NULL CHECK (event_type IN ('filing','red_flag','signal')),
+    event_id    INTEGER NOT NULL,
+    ticker      TEXT NOT NULL,
+    event_date  TEXT NOT NULL,
+    label       TEXT NOT NULL,
+    category    TEXT NOT NULL DEFAULT '',
+    base_date   TEXT,
+    ret_1d      REAL, ret_5d REAL, ret_20d REAL,
+    nifty_1d    REAL, nifty_5d REAL, nifty_20d REAL,
+    complete    INTEGER NOT NULL DEFAULT 0,
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(event_type, event_id)
+  )`,
+
+  // Quarterly figures from results XBRL, full rupees
+  `CREATE TABLE IF NOT EXISTS quarterly_financials (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker        TEXT NOT NULL,
+    quarter       TEXT NOT NULL,
+    period_end    TEXT NOT NULL,
+    basis         TEXT NOT NULL CHECK (basis IN ('Consolidated','Standalone')),
+    revenue       REAL, other_income REAL, finance_costs REAL, depreciation REAL,
+    exceptional   REAL, pbt REAL, pat REAL, eps REAL, ebitda REAL,
+    filed_at      TEXT NOT NULL DEFAULT '',
+    seq_id        INTEGER NOT NULL,
+    source_url    TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(ticker, period_end, basis)
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS board_meetings (
+    ticker        TEXT NOT NULL,
+    meeting_date  TEXT NOT NULL,
+    purpose       TEXT NOT NULL DEFAULT '',
+    description   TEXT NOT NULL DEFAULT '',
+    is_results    INTEGER NOT NULL DEFAULT 0,
+    brief_sent_at TEXT,
+    PRIMARY KEY (ticker, meeting_date)
+  )`,
+
+  // Insider trades (PIT), SAST Reg 29, pledge snapshots, bulk and block deals
+  `CREATE TABLE IF NOT EXISTS market_signals (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker        TEXT NOT NULL,
+    signal_type   TEXT NOT NULL CHECK (signal_type IN ('insider','sast','pledge','bulk_deal','block_deal')),
+    event_date    TEXT NOT NULL,
+    event_minutes INTEGER,
+    party         TEXT NOT NULL DEFAULT '',
+    category      TEXT NOT NULL DEFAULT '',
+    direction     TEXT NOT NULL DEFAULT '',
+    quantity      REAL, value REAL, price REAL,
+    detail        TEXT NOT NULL DEFAULT '',
+    dedup_key     TEXT NOT NULL UNIQUE,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
 ];
 
 // ── Migrations: add columns to existing tables ───────────────────────────────
@@ -182,6 +253,10 @@ const ADD_COLUMNS = [
   `ALTER TABLE quarter_index ADD COLUMN ingested_at TEXT`,
   `ALTER TABLE companies     ADD COLUMN bse_code    TEXT`,
   `ALTER TABLE query_log     ADD COLUMN rating      INTEGER`,
+  `ALTER TABLE daily_filings ADD COLUMN filed_at    TEXT`,
+  `ALTER TABLE quarter_index ADD COLUMN transcript_filed_at TEXT`,
+  // Older databases created quarter_index with `source TEXT NOT NULL`; registerQuarter writes it.
+  `ALTER TABLE quarter_index ADD COLUMN source TEXT NOT NULL DEFAULT ''`,
 ];
 
 // ── Indexes ───────────────────────────────────────────────────────────────────
@@ -199,20 +274,21 @@ const CREATE_INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_daily_filings_ticker_date ON daily_filings (ticker, filing_date)`,
   `CREATE INDEX IF NOT EXISTS idx_daily_filings_date        ON daily_filings (filing_date DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_daily_filings_important   ON daily_filings (is_important, filing_date DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_reactions_ticker   ON price_reactions (ticker, event_date)`,
+  `CREATE INDEX IF NOT EXISTS idx_reactions_pending  ON price_reactions (event_type, complete)`,
+  `CREATE INDEX IF NOT EXISTS idx_financials_ticker  ON quarterly_financials (ticker, period_end)`,
+  `CREATE INDEX IF NOT EXISTS idx_meetings_date      ON board_meetings (meeting_date)`,
+  `CREATE INDEX IF NOT EXISTS idx_signals_ticker     ON market_signals (ticker, event_date DESC)`,
 ];
 
 // ── Seed companies ────────────────────────────────────────────────────────────
 
+// Single source: src/backend/watchlist.ts. Removing a company there does not
+// delete it here; run scripts/update-watchlist.ts for that.
+const sql = (s: string) => `'${s.replace(/'/g, "''")}'`;
 const SEED_COMPANIES = [
-  `INSERT OR IGNORE INTO companies (ticker, name, sector, bse_code) VALUES
-    ('WOCKPHARMA', 'Wockhardt Ltd.',               'Pharma',          '532300'),
-    ('RPOWER',     'Reliance Power Ltd.',          'Power',           '532939'),
-    ('IONEXCHANG', 'Ion Exchange (India) Ltd.',    'Water Treatment', '500213'),
-    ('SAMMAANCAP', 'Sammaan Capital Ltd.',         'NBFC',            '535789'),
-    ('SHAKTIPUMP', 'Shakti Pumps (India) Ltd.',    'Capital Goods',   '531431'),
-    ('TRUALT',     'TruAlt Bioenergy Ltd.',        'Energy',          '544545'),
-    ('MMTC',       'MMTC Ltd.',                    'Trading',         '513377'),
-    ('PSPPROJECT', 'PSP Projects Ltd.',            'Construction',    '540544')`,
+  `INSERT OR IGNORE INTO companies (ticker, name, sector, bse_code) VALUES\n` +
+  WATCHLIST.map(c => `    (${sql(c.ticker)}, ${sql(c.name)}, ${sql(c.sector)}, ${sql(c.bseCode)})`).join(',\n'),
 ];
 
 async function main() {
@@ -225,7 +301,7 @@ async function main() {
 
   console.log('\nCreating tables...');
   await runPipeline(CREATE_TABLES);
-  console.log('  ✓ companies, quarter_index, sentiment_scores, query_log');
+  console.log(`  ✓ ${CREATE_TABLES.length} tables (incl. price_reactions, quarterly_financials, board_meetings, market_signals)`);
 
   console.log('\nApplying column migrations...');
   // Run one-per-statement so a "duplicate column" on one doesn't abort others
@@ -240,7 +316,7 @@ async function main() {
 
   console.log('\nSeeding companies...');
   await runPipeline(SEED_COMPANIES);
-  console.log('  ✓ 10 NSE companies (skipped if already present)');
+  console.log(`  ✓ ${WATCHLIST.length} watchlist companies (skipped if already present)`);
 
   console.log('\nDone. Re-runnable at any time — existing data is never overwritten.');
 }

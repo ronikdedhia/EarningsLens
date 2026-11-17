@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { apiFetch } from '@/frontend/api';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
@@ -11,7 +12,7 @@ export function useAvailableQuarters(): string[] {
 
   useEffect(() => {
     if (_cache) return;
-    fetch(`${API}/api/companies`)
+    apiFetch(`${API}/api/companies`)
       .then(r => r.json())
       .then(d => {
         const seen = new Set<string>();

@@ -25,8 +25,12 @@ router.post('/scan', async (req: Request, res: Response) => {
   const { ticker, quarter } = req.body;
   if (!ticker || !quarter) return res.status(400).json({ error: 'ticker and quarter required' });
 
-  const flags = await scanAndSaveRedFlags(ticker.toUpperCase(), quarter);
-  return res.json({ flags, found: flags.length });
+  try {
+    const flags = await scanAndSaveRedFlags(ticker.toUpperCase(), quarter);
+    return res.json({ flags, found: flags.length });
+  } catch (err) {
+    return res.status(502).json({ error: (err as Error).message });
+  }
 });
 
 export { router as redflagsRouter };

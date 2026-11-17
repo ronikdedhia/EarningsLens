@@ -2,24 +2,25 @@ import { Annotation, StateGraph, START, END } from '@langchain/langgraph';
 import { scrollChunks } from '../services/qdrant.service';
 import { scanRedFlags, type DetectedRedFlag } from '../services/groq.service';
 import { saveRedFlags, getRedFlags, type RedFlagRow } from '../services/turso.service';
+import { chunkBlocks, packWindows } from '../utils/transcript';
 
 const RedFlagsAnnotation = Annotation.Root({
   ticker:   Annotation<string>,
   quarter:  Annotation<string>,
-  chunks:   Annotation<string>,
+  windows:  Annotation<string[]>,
   flags:    Annotation<DetectedRedFlag[]>,
   result:   Annotation<RedFlagRow[]>,
 });
 
 async function fetchChunksNode(state: typeof RedFlagsAnnotation.State) {
-  const rawChunks = await scrollChunks({ ticker: state.ticker, quarters: [state.quarter] }, 400);
-  const chunks = rawChunks.map(c => `[${c.speakerRole}] ${c.text}`).join('\n\n');
-  return { chunks };
+  // Whole transcript, in transcript order, split into windows the model can read.
+  const rawChunks = await scrollChunks({ ticker: state.ticker, quarters: [state.quarter] }, 2000);
+  return { windows: packWindows(chunkBlocks(rawChunks)) };
 }
 
 async function scanNode(state: typeof RedFlagsAnnotation.State) {
-  if (!state.chunks) return { flags: [] as DetectedRedFlag[] };
-  const flags = await scanRedFlags(state.ticker, state.quarter, state.chunks);
+  if (!state.windows.length) return { flags: [] as DetectedRedFlag[] };
+  const flags = await scanRedFlags(state.ticker, state.quarter, state.windows);
   return { flags };
 }
 

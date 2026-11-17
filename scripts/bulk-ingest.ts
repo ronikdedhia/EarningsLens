@@ -4,13 +4,13 @@
  *
  * Usage:
  *   1. Add rows to quarter_index with pdf_url via Turso shell or POST /api/quarters
- *   2. npm run dev
- *   3. npx tsx scripts/bulk-ingest.ts
+ *   2. npx tsx scripts/bulk-ingest.ts   (runs ingestion in-process; no dev server needed)
  */
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 import { getPendingIngestions } from '../src/backend/services/turso.service';
 import { fetchPdfBuffer } from '../src/backend/utils/pdf';
+import { runIngestion } from '../src/backend/services/ingestion.service';
 
 async function parsePdfWithLlamaParse(buffer: Buffer): Promise<string | null> {
   if (!process.env.LLAMA_CLOUD_API_KEY) return null;
@@ -41,7 +41,6 @@ async function parsePdfWithLlamaParse(buffer: Buffer): Promise<string | null> {
 
 dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
 
-const BASE_URL = `http://localhost:${process.env.BACKEND_PORT ?? '3001'}`;
 const DELAY_MS = 3000;
 
 async function fetchPdfText(url: string): Promise<string> {
@@ -67,16 +66,15 @@ async function processOne(row: Awaited<ReturnType<typeof getPendingIngestions>>[
     return { status: 'error' as const, detail: 'PDF parsed but text too short — check URL' };
   }
 
-  const res = await fetch(`${BASE_URL}/api/ingest`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ticker, quarter, fiscalYear, publishedAt, source: pdfUrl, transcript }),
-  });
-
-  const data = await res.json();
-  if (!res.ok) return { status: 'error' as const, detail: data.error ?? `HTTP ${res.status}` };
-  if (data.skipped) return { status: 'skipped' as const, detail: 'already ingested' };
-  return { status: 'ok' as const, detail: data.message, chunks: data.chunks };
+  // In-process: /api/ingest now requires a signed-in user, and the script no
+  // longer needs the dev server running.
+  try {
+    const data = await runIngestion({ ticker, quarter, fiscalYear, publishedAt, source: pdfUrl, transcript });
+    if (data.skipped) return { status: 'skipped' as const, detail: 'already ingested' };
+    return { status: 'ok' as const, detail: data.message, chunks: data.chunks };
+  } catch (e) {
+    return { status: 'error' as const, detail: (e as Error).message };
+  }
 }
 
 async function main() {
@@ -107,6 +105,8 @@ async function main() {
     else errors.push(`${row.ticker} ${row.quarter}: ${result.detail}`);
   }
 
+  const { waitForBackgroundAnalysis } = await import('../src/backend/graphs/ingest.graph');
+  await waitForBackgroundAnalysis();
   console.log(`\n✓ ${ok}  – ${skipped}  ✗ ${errors.length}`);
   if (errors.length) { errors.forEach((e) => console.log(`  ${e}`)); process.exit(1); }
 }

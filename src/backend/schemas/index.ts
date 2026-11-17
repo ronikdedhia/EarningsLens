@@ -24,13 +24,23 @@ export const SentimentSchema = z.object({
   score: z.number().min(0).max(1),
 });
 
+export const SentimentBatchSchema = z.object({
+  results: z.array(z.object({
+    index: z.number().int().min(0),
+    label: z.enum(['positive', 'negative', 'neutral']),
+    score: z.number().min(0).max(1),
+  })),
+});
+
 // ── Red Flags ─────────────────────────────────────────────────────────────────
 
 export const RedFlagArraySchema = z.object({
   flags: z.array(z.object({
     flagType: z.enum(RED_FLAG_TYPES),
     severity: z.enum(['Low', 'Medium', 'High']),
-    evidence: z.string().max(150),
+    // No .max(): a 151-char quote used to fail validation and drop every flag in
+    // the response. Length is trimmed in code instead.
+    evidence: z.string(),
   })),
 });
 
@@ -40,16 +50,26 @@ export const ExtractedPromisesSchema = z.object({
   promises: z.array(z.object({
     speaker: z.string(),
     category: z.enum(PROMISE_CATEGORIES),
-    verbatimQuote: z.string().max(200),
+    // Trimmed and capped in code; a schema limit rejects the whole response.
+    verbatimQuote: z.string(),
     timeframe: z.string(),
     confidenceScore: z.number().int().min(1).max(5),
     directLanguage: z.boolean(),
-  })).max(10),
+  })),
 });
 
+// 'pending' = not due yet and not addressed. Without it the model had to pick
+// 'missed' for a promise whose deadline is still in the future.
 export const PromiseResolutionSchema = z.object({
-  status: z.enum(['delivered', 'partial', 'missed']),
+  status: z.enum(['delivered', 'partial', 'missed', 'pending']),
   resolutionNote: z.string(),
+});
+
+export const TranscriptDigestSchema = z.object({
+  topics: z.array(z.object({
+    topic:  z.string(),
+    stance: z.string(),
+  })),
 });
 
 // ── Management Quality ────────────────────────────────────────────────────────

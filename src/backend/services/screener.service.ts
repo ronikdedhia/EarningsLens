@@ -18,7 +18,7 @@ const MONTH_MAP: Record<string, number> = {
 // Q2FY{N}: Jul-Sep (N-1), concall Oct-Dec (N-1)
 // Q3FY{N}: Oct-Dec (N-1), concall Jan-Mar N
 // Q4FY{N}: Jan-Mar N,     concall Apr-Jun N
-function concallDateToQuarter(month: number, year: number): string {
+export function concallDateToQuarter(month: number, year: number): string {
   let q: number;
   let fyEnd: number;
   if (month >= 1 && month <= 3)       { q = 3; fyEnd = year; }

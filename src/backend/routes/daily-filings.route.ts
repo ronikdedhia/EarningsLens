@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { getDailyFilings, getLatestFilingDate } from '../services/turso.service';
-import { runDailyFilingsScrape } from '../graphs/daily-filings.graph';
+import { runDailyJobs, type DailyJobsResult } from '../services/jobs.service';
 import { qstashVerify } from '../middleware/qstash';
 
 const router = Router();
@@ -13,7 +13,7 @@ type ScrapeStatus = {
   finishedAt: string | null;
   stage:      string;
   progress:   string[];   // rolling log of steps
-  result:     { saved: number; important: number } | null;
+  result:     DailyJobsResult | null;
   error:      string | null;
 };
 
@@ -87,19 +87,19 @@ router.post('/run', qstashVerify, (req: Request, res: Response) => {
   // Respond immediately — client polls /status
   res.json({ status: 'started', message: 'Scrape kicked off. Poll GET /api/daily-filings/status for progress.' });
 
-  // Run in background
-  const TIMEOUT_MS = 10 * 60 * 1000;
+  // Run in background: filings, then insider/deal signals, results, price reactions
+  const TIMEOUT_MS = 20 * 60 * 1000;
   const timeout = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error('scrape timed out after 10 min')), TIMEOUT_MS)
+    setTimeout(() => reject(new Error('daily jobs timed out after 20 min')), TIMEOUT_MS)
   );
 
-  Promise.race([runDailyFilingsScrape(date), timeout])
+  Promise.race([runDailyJobs(date), timeout])
     .then(result => {
       status.running    = false;
       status.finishedAt = new Date().toISOString();
       status.stage      = 'done';
       status.result     = result;
-      status.progress.push(`[${status.finishedAt}] DONE — saved=${result.saved} important=${result.important}`);
+      status.progress.push(`[${status.finishedAt}] DONE — saved=${result.saved} important=${result.important} signals=${result.signals} financials=${result.financials} reactions=${result.reactions}`);
       console.log('[daily-filings/run] DONE', result);
     })
     .catch(err => {

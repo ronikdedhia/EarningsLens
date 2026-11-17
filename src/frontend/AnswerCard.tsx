@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { apiFetch } from '@/frontend/api';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
@@ -12,7 +13,7 @@ export default function AnswerCard({ answer, queryLogId }: Props) {
   async function rate(r: 1 | -1) {
     if (rated !== null || !queryLogId) return;
     setRated(r);
-    fetch(`${API}/api/queries/${queryLogId}/rate`, {
+    apiFetch(`${API}/api/queries/${queryLogId}/rate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ rating: r }),

@@ -1,31 +1,23 @@
 import { Annotation, StateGraph, START, END } from '@langchain/langgraph';
-import { ChatGroq } from '@langchain/groq';
 import { SystemMessage, HumanMessage } from '@langchain/core/messages';
-import { scrapeFilingsForDate, type RawBseFiling } from '../services/daily-filings.service';
+import { scrapeFilingsForDate, type RawBseFiling, type FetchFailure } from '../services/daily-filings.service';
 import { fetchPdfText } from '../utils/pdf';
 import { isDailyFilingKnown, saveDailyFiling, type FilingInsights } from '../services/turso.service';
-import { notify } from '../services/telegram.service';
+import { notifyAsync } from '../services/telegram.service';
+import { buildDigest } from '../services/filings-digest';
+import { chatModel, withLlmSlot } from '../services/llm';
 import { FilingImportanceSchema, FilingInsightsSchema, FILING_CATEGORIES } from '../schemas';
 import { updateScrapeStage } from '../routes/daily-filings.route';
 
 // ── Models ────────────────────────────────────────────────────────────────────
 
 function classifyModel() {
-  return new ChatGroq({
-    apiKey: process.env.GROQ_API_KEY,
-    model:  'llama-3.1-8b-instant',   // cheap — just classifying titles
-    temperature: 0,
-    maxTokens:   150,
-  }).withStructuredOutput(FilingImportanceSchema);
+  // cheap tier — it only reads titles
+  return chatModel('fast', { temperature: 0, maxTokens: 150 }).withStructuredOutput(FilingImportanceSchema);
 }
 
 function insightModel() {
-  return new ChatGroq({
-    apiKey:      process.env.GROQ_API_KEY,
-    model:       process.env.GROQ_MODEL ?? 'llama-3.1-70b-versatile',
-    temperature: 0.1,
-    maxTokens:   800,
-  }).withStructuredOutput(FilingInsightsSchema);
+  return chatModel('main', { temperature: 0.1, maxTokens: 800 }).withStructuredOutput(FilingInsightsSchema);
 }
 
 // Filings scoring at/above this are worth a PDF fetch + LLM summary.
@@ -51,10 +43,12 @@ interface ProcessedFiling extends ClassifiedFiling {
 
 const DailyFilingsAnnotation = Annotation.Root({
   targetDate:    Annotation<string>,          // YYYY-MM-DD
-  totalScraped:  Annotation<number>,          // BSE results before dedup
-  allScraped:    Annotation<RawBseFiling[]>,  // full list before dedup (for notify)
+  totalScraped:  Annotation<number>,          // exchange results before dedup
+  companies:     Annotation<number>,          // companies attempted
+  failures:      Annotation<FetchFailure[]>,  // companies where NSE and BSE both failed
   rawFilings:    Annotation<RawBseFiling[]>,  // new filings after dedup
   classified:    Annotation<ClassifiedFiling[]>,
+  unclassified:  Annotation<RawBseFiling[]>,  // classifier call failed; not saved, so a re-run retries them
   processed:     Annotation<ProcessedFiling[]>,
   savedCount:    Annotation<number>,
 });
@@ -62,32 +56,36 @@ const DailyFilingsAnnotation = Annotation.Root({
 // ── Nodes ─────────────────────────────────────────────────────────────────────
 
 async function scrapeNode(state: typeof DailyFilingsAnnotation.State) {
-  updateScrapeStage('scraping', `BSE filings for ${state.targetDate}`);
+  updateScrapeStage('scraping', `NSE/BSE filings for ${state.targetDate}`);
   const date = state.targetDate ? new Date(state.targetDate) : undefined;
-  const allFilings = await scrapeFilingsForDate(date);
-  const totalScraped = allFilings.length;
+  const { filings, failures, companies } = await scrapeFilingsForDate(date);
+  const totalScraped = filings.length;
 
-  updateScrapeStage('deduping', `${totalScraped} raw filings from BSE`);
+  updateScrapeStage('deduping', `${totalScraped} raw filings, ${failures.length}/${companies} companies failed`);
   const newFilings: RawBseFiling[] = [];
-  for (const f of allFilings) {
+  const seen = new Set<string>();
+  for (const f of filings) {
+    if (seen.has(f.pdfUrl)) continue;
+    seen.add(f.pdfUrl);
     if (!(await isDailyFilingKnown(f.pdfUrl))) newFilings.push(f);
   }
   updateScrapeStage('scraped', `total=${totalScraped} new=${newFilings.length} (${totalScraped - newFilings.length} already seen)`);
-  return { rawFilings: newFilings, allScraped: allFilings, totalScraped };
+  return { rawFilings: newFilings, totalScraped, failures, companies };
 }
 
 async function classifyNode(state: typeof DailyFilingsAnnotation.State) {
   updateScrapeStage('classifying', `${state.rawFilings.length} new filings via Groq`);
-  if (!state.rawFilings.length) return { classified: [] as ClassifiedFiling[] };
+  if (!state.rawFilings.length) return { classified: [] as ClassifiedFiling[], unclassified: [] as RawBseFiling[] };
 
   const classified: ClassifiedFiling[] = [];
+  const unclassified: RawBseFiling[] = [];
   const model = classifyModel();
 
   for (const filing of state.rawFilings) {
     try {
-      const result = await model.invoke([
+      const result = await withLlmSlot(() => model.invoke([
         new SystemMessage(
-          `You are a financial analyst assistant. Classify the importance of BSE stock exchange filings.
+          `You are a financial analyst assistant. Classify the importance of Indian stock exchange (NSE/BSE) filings.
 Score 1–5 where:
 5 = Financial results, major acquisition, CEO/MD change, regulatory action, profit warning
 4 = Investor presentation WITH actual guidance/numbers, significant board decision, dividend announcement
@@ -95,14 +93,14 @@ Score 1–5 where:
 2 = Administrative filing, change of registered office, meeting/call SCHEDULE intimation with no content yet, statutory compliance
 1 = Trivial/routine regulatory filing with no investor relevance (boilerplate Reg 30 disclosures, generic compliance certificates)
 
-Score based on likely investor relevance, not just how generic the BSE title sounds — many genuinely material filings (e.g. a large new contract) get filed under bland regulatory titles.
+Score based on likely investor relevance, not just how generic the exchange title sounds — many genuinely material filings (e.g. a large new contract) get filed under bland regulatory titles.
 
 Also classify into: earnings | board | investor_meet | press_release | management_change | acquisition | regulatory | other`
         ),
         new HumanMessage(
-          `Company: ${filing.ticker}\nBSE Category: ${filing.bseCategory}\nTitle: ${filing.title}\n\nClassify this filing.`
+          `Company: ${filing.ticker}\nExchange category: ${filing.bseCategory}\nTitle: ${filing.title}\n\nClassify this filing.`
         ),
-      ]);
+      ]));
       classified.push({
         ...filing,
         isImportant: result.score >= IMPORTANCE_THRESHOLD,
@@ -110,15 +108,17 @@ Also classify into: earnings | board | investor_meet | press_release | managemen
         filingCat:   result.filingCategory as typeof FILING_CATEGORIES[number],
         reason:      result.reason,
       });
-    } catch {
-      // default to unimportant on error
-      classified.push({ ...filing, isImportant: false, importance: 1, filingCat: 'other', reason: '' });
+    } catch (err) {
+      // Used to be saved as importance 1, which buried every filing whenever Groq
+      // was down (e.g. after the model shutdown) and dedup meant it never came back.
+      console.error(`[classify] ${filing.ticker} failed:`, String(err).slice(0, 200));
+      unclassified.push(filing);
     }
   }
 
   const important = classified.filter(c => c.isImportant).length;
-  updateScrapeStage('classified', `${classified.length} filings — ${important} important`);
-  return { classified };
+  updateScrapeStage('classified', `${classified.length} filings — ${important} important, ${unclassified.length} failed`);
+  return { classified, unclassified };
 }
 
 async function downloadAndInsightNode(state: typeof DailyFilingsAnnotation.State) {
@@ -143,14 +143,13 @@ async function downloadAndInsightNode(state: typeof DailyFilingsAnnotation.State
     try {
       textContent = await fetchPdfText(filing.pdfUrl);
       pdfOk++;
-      console.log(`[graph:process] PDF ok (${textContent.length} chars)`);
     } catch {
-      // AttachHis may 404 for same-day filings — try AttachLive
+      // BSE AttachHis may 404 for same-day filings — try AttachLive (no-op for NSE URLs)
+      const livePdfUrl = filing.pdfUrl.replace('/AttachHis/', '/AttachLive/');
       try {
-        const livePdfUrl = filing.pdfUrl.replace('/AttachHis/', '/AttachLive/');
+        if (livePdfUrl === filing.pdfUrl) throw new Error('no alternate URL');
         textContent = await fetchPdfText(livePdfUrl);
         pdfOk++;
-        console.log(`[graph:process] PDF ok via AttachLive (${textContent.length} chars)`);
       } catch {
         pdfFail++;
         console.log(`[graph:process] PDF failed — proceeding without text`);
@@ -160,9 +159,9 @@ async function downloadAndInsightNode(state: typeof DailyFilingsAnnotation.State
 
     if (textContent.length > 200) {
       try {
-        const result = await model.invoke([
+        const result = await withLlmSlot(() => model.invoke([
           new SystemMessage(
-            `You are a financial analyst. Extract key insights from this BSE filing for ${filing.ticker}.
+            `You are a financial analyst. Extract key insights from this stock exchange filing for ${filing.ticker}.
 Filing category: ${filing.bseCategory}
 Filing title: ${filing.title}
 
@@ -174,7 +173,7 @@ Provide:
 - watchFor: what to watch in the next earnings call or filing related to this`
           ),
           new HumanMessage(textContent.slice(0, 8000)),
-        ]);
+        ]));
         insights = {
           summary:    result.summary,
           keyPoints:  result.keyPoints,
@@ -183,7 +182,8 @@ Provide:
           watchFor:   result.watchFor,
         };
         sentiment = result.sentiment;
-      } catch {
+      } catch (err) {
+        console.error(`[insights] ${filing.ticker} failed:`, String(err).slice(0, 200));
         insights = null;
       }
     }
@@ -212,92 +212,35 @@ async function saveNode(state: typeof DailyFilingsAnnotation.State) {
         filingCat:   f.filingCat,
         insights:    f.insights,
         sentiment:   f.sentiment,
+        filedAt:     f.filedAt,
       });
       savedCount++;
-    } catch {
-      // non-fatal per filing
+    } catch (err) {
+      console.error(`[save] ${f.ticker} failed:`, String(err).slice(0, 200));
     }
   }
   updateScrapeStage('saved', `${savedCount} filings written to DB`);
   return { savedCount };
 }
 
-function truncateTitle(title: string, max = 100): string {
-  if (title.length <= max) return title;
-  const cut = title.slice(0, max);
-  const lastSpace = cut.lastIndexOf(' ');
-  return (lastSpace > max * 0.5 ? cut.slice(0, lastSpace) : cut) + '…';
-}
-
-function groupByTicker<T extends { ticker: string }>(items: T[]): Map<string, T[]> {
-  const map = new Map<string, T[]>();
-  for (const item of items) {
-    if (!map.has(item.ticker)) map.set(item.ticker, []);
-    map.get(item.ticker)!.push(item);
-  }
-  return map;
-}
+// ── Telegram digest ───────────────────────────────────────────────────────────
 
 async function notifyNode(state: typeof DailyFilingsAnnotation.State) {
-  if (!state.rawFilings.length) {
-    if (state.totalScraped === 0) {
-      notify(`📋 *EarningsLens* — ${state.targetDate}\n⚠️ BSE returned 0 filings — possible API blip.`);
-      return {};
+  const parts = buildDigest({
+    targetDate:   state.targetDate,
+    companies:    state.companies,
+    totalScraped: state.totalScraped,
+    failures:     state.failures ?? [],
+    newCount:     state.rawFilings.length,
+    processed:    state.processed ?? [],
+    unclassified: state.unclassified ?? [],
+  });
+  for (const part of parts) {
+    try {
+      await notifyAsync(part);
+    } catch (err) {
+      console.error('[daily-filings] Telegram send failed:', String(err));
     }
-    // All already in DB — group by ticker, show titles
-    const grouped = groupByTicker(state.allScraped ?? []);
-    const sections: string[] = [];
-    for (const [ticker, filings] of grouped) {
-      const titles = filings.map(f => `  · ${truncateTitle(f.title)}`).join('\n');
-      sections.push(`*${ticker}* (${filings.length})\n${titles}`);
-    }
-    const CHUNK = 8; // tickers per message
-    const tickers = [...grouped.keys()];
-    for (let i = 0; i < sections.length; i += CHUNK) {
-      const header = i === 0
-        ? `📋 *EarningsLens* — ${state.targetDate}\n${state.totalScraped} filings (all already in DB)\n\n`
-        : `📋 _(continued)_\n\n`;
-      notify(header + sections.slice(i, i + CHUNK).join('\n\n'));
-    }
-    return {};
-  }
-
-  const important = state.processed.filter(f => f.isImportant);
-
-  if (!important.length) {
-    // New filings saved but none important — group by ticker
-    const grouped = groupByTicker(state.processed);
-    const sections: string[] = [];
-    for (const [ticker, filings] of grouped) {
-      const titles = filings.map(f => `  · ${truncateTitle(f.title)}`).join('\n');
-      sections.push(`*${ticker}* (${filings.length})\n${titles}`);
-    }
-    notify(
-      `📋 *EarningsLens* — ${state.targetDate}\n` +
-      `${state.processed.length} new filings saved, none flagged important\n\n` +
-      sections.join('\n\n')
-    );
-    return {};
-  }
-
-  // Important filings — grouped by ticker, with insight summary
-  const grouped = groupByTicker(important);
-  const sections: string[] = [];
-  for (const [ticker, filings] of grouped) {
-    const lines = filings.map(f => {
-      const emoji = f.importance >= 5 ? '🔴' : f.importance >= 4 ? '🟡' : '🟢';
-      const summary = f.insights?.summary ? `\n    _${f.insights.summary.slice(0, 120)}_` : '';
-      return `  ${emoji} ${truncateTitle(f.title)}${summary}`;
-    });
-    sections.push(`*${ticker}* (${filings.length})\n${lines.join('\n')}`);
-  }
-
-  const CHUNK = 6;
-  for (let i = 0; i < sections.length; i += CHUNK) {
-    const header = i === 0
-      ? `📋 *EarningsLens* — ${state.targetDate}\n${important.length} important of ${state.rawFilings.length} new filings\n\n`
-      : `📋 _(continued)_\n\n`;
-    notify(header + sections.slice(i, i + CHUNK).join('\n\n'));
   }
   return {};
 }
@@ -322,19 +265,32 @@ const workflow = new StateGraph(DailyFilingsAnnotation)
 
 export const dailyFilingsGraph = workflow.compile();
 
-export async function runDailyFilingsScrape(targetDate?: string): Promise<{ saved: number; important: number }> {
+let inFlight: Promise<{ saved: number; important: number }> | null = null;
+
+/**
+ * Single-flight: QStash and node-cron used to fire at the same minute, so two
+ * scrapes ran together and the second one posted a "(all already in DB)" digest
+ * repeating every title. A second caller now joins the run already in progress.
+ */
+export function runDailyFilingsScrape(targetDate?: string): Promise<{ saved: number; important: number }> {
+  if (inFlight) return inFlight;
   const date = targetDate ?? new Date().toISOString().slice(0, 10);
-  const state = await dailyFilingsGraph.invoke({
-    targetDate:   date,
-    totalScraped: 0,
-    allScraped:   [],
-    rawFilings:   [],
-    classified:   [],
-    processed:    [],
-    savedCount:   0,
-  });
-  return {
-    saved:     state.savedCount,
-    important: state.processed.filter((f: ProcessedFiling) => f.isImportant).length,
-  };
+  inFlight = (async () => {
+    const state = await dailyFilingsGraph.invoke({
+      targetDate:   date,
+      totalScraped: 0,
+      companies:    0,
+      failures:     [],
+      rawFilings:   [],
+      classified:   [],
+      unclassified: [],
+      processed:    [],
+      savedCount:   0,
+    });
+    return {
+      saved:     state.savedCount,
+      important: (state.processed ?? []).filter((f: ProcessedFiling) => f.isImportant).length,
+    };
+  })().finally(() => { inFlight = null; });
+  return inFlight;
 }

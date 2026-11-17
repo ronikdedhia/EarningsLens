@@ -1,24 +1,13 @@
 import axios from 'axios';
 import { getBseCode, setBseCode } from './turso.service';
 import { discoverPdfUrlFromScreener } from './screener.service';
+import { fetchNseAnnouncements, type NseAnnouncement } from './nse.service';
 
 const BSE_API = 'https://api.bseindia.com/BseIndiaAPI/api';
 const REFERER  = 'https://www.bseindia.com/';
 
-// Fallback map for seeded companies — BSE's ListofScripData API is unreliable
-const STATIC_BSE_CODES: Record<string, string> = {
-  HDFCBANK:   '500180',
-  ICICIBC:    '532174',
-  ICICIBANK:  '532174',
-  AXISBANK:   '532215',
-  KOTAKBANK:  '500247',
-  SBIN:       '500112',
-  INFY:       '500209',
-  TCS:        '532540',
-  WIPRO:      '507685',
-  RELIANCE:   '500325',
-  BAJFINANCE: '500034',
-};
+// Fallback map for watchlist companies — BSE's ListofScripData API is unreliable
+import { STATIC_BSE_CODES } from '../watchlist';
 
 // ── Quarter → calendar date range ─────────────────────────────────────────────
 // Indian FY: Q1=Apr-Jun, Q2=Jul-Sep, Q3=Oct-Dec, Q4=Jan-Mar
@@ -91,19 +80,57 @@ const CONCALL_KEYWORDS = [
   'analyst meet', 'analyst / investor meet - outcome', 'investor meet - outcome',
 ];
 
-export async function discoverPdfUrl(ticker: string, quarter: string): Promise<string | null> {
-  // Primary: Screener.in → BSE AttachHis (not Akamai-blocked, works for all companies)
+// The NSE category varies by company ("Analysts/Institutional Investor Meet/Con. Call
+// Updates" for Shakti Pumps, plain "Updates" for Infosys), so match on the text.
+export function isNseTranscript(a: Pick<NseAnnouncement, 'category' | 'text'>): boolean {
+  const text = `${a.category} ${a.text}`.toLowerCase();
+  return text.includes('transcript') && /\b(call|con\.? ?call|concall|conference)\b/.test(text)
+    && !/\b(agm|annual general meeting)\b/.test(text);
+}
+
+function yyyymmddToDate(s: string): Date {
+  return new Date(`${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}T12:00:00+05:30`);
+}
+
+export interface DiscoveredTranscript {
+  pdfUrl:   string;
+  filedAt?: string;   // exchange broadcast time, "YYYY-MM-DD HH:MM:SS" IST; only NSE gives it
+}
+
+export async function discoverPdfUrl(ticker: string, quarter: string): Promise<DiscoveredTranscript | null> {
+  const { from, to } = quarterToAnnouncementRange(quarter);
+
+  // Primary: NSE announcements. Gives the exact filing time, which price
+  // reactions to red flags are measured from.
+  try {
+    const announcements = await fetchNseAnnouncements(ticker, yyyymmddToDate(from), yyyymmddToDate(to));
+    const hit = announcements
+      .filter(isNseTranscript)
+      .sort((a, b) => a.filedAt.localeCompare(b.filedAt))[0]; // the original, not a later corrected copy
+    if (hit) return { pdfUrl: hit.pdfUrl, filedAt: hit.filedAt || undefined };
+  } catch {
+    // fall through
+  }
+
+  // Second: Screener.in → BSE AttachHis (no filing time)
   try {
     const screenerUrl = await discoverPdfUrlFromScreener(ticker, quarter);
-    if (screenerUrl) return screenerUrl;
+    if (screenerUrl) return { pdfUrl: screenerUrl };
   } catch {
     // fall through to BSE API
   }
 
-  // Fallback: BSE announcement API → AttachLive (may be Akamai-blocked)
-  const bseCode = await resolveBseCode(ticker);
-  const { from, to } = quarterToAnnouncementRange(quarter);
+  // Last resort: BSE announcement API → AttachLive. Akamai blocks it (403), so a
+  // failure here means "not found", not an error for the whole quarter.
+  try {
+    return await discoverFromBse(ticker, from, to);
+  } catch {
+    return null;
+  }
+}
 
+async function discoverFromBse(ticker: string, from: string, to: string): Promise<DiscoveredTranscript | null> {
+  const bseCode = await resolveBseCode(ticker);
   const { data } = await axios.get(`${BSE_API}/AnnGetData/w`, {
     params: {
       strCat:       '-1',
@@ -127,5 +154,5 @@ export async function discoverPdfUrl(ticker: string, quarter: string): Promise<s
   });
 
   if (!hit?.ATTACHMENTNAME) return null;
-  return `https://www.bseindia.com/xml-data/corpfiling/AttachLive/${hit.ATTACHMENTNAME}`;
+  return { pdfUrl: `https://www.bseindia.com/xml-data/corpfiling/AttachLive/${hit.ATTACHMENTNAME}` };
 }

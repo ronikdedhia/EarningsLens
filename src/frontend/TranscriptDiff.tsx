@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { apiFetch } from '@/frontend/api';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
@@ -89,7 +90,7 @@ export default function TranscriptDiff() {
     setQ2('');
     setResult(null);
     try {
-      const res  = await fetch(`${API}/api/diff/quarters?ticker=${encodeURIComponent(t)}`);
+      const res  = await apiFetch(`${API}/api/diff/quarters?ticker=${encodeURIComponent(t)}`);
       const data = await res.json();
       const qs: string[] = data.quarters ?? [];
       setQuarters(qs);
@@ -118,7 +119,7 @@ export default function TranscriptDiff() {
     setError('');
     setResult(null);
     try {
-      const res = await fetch(
+      const res = await apiFetch(
         `${API}/api/diff?ticker=${encodeURIComponent(ticker)}&q1=${encodeURIComponent(q1)}&q2=${encodeURIComponent(q2)}`
       );
       if (!res.ok) {

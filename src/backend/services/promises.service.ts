@@ -8,7 +8,7 @@ export async function extractPromisesForQuarter(
   const state = await extractPromisesGraph.invoke({
     ticker,
     quarter,
-    mgmtText: '',
+    windows:  [],
     result:   [],
   });
   return state.result;

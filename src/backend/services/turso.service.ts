@@ -2,7 +2,7 @@ import { createClient, type Client } from '@libsql/client';
 
 let _db: Client | null = null;
 
-function db(): Client {
+export function db(): Client {
   if (!_db) {
     const url = process.env.TURSO_DATABASE_URL!
       .replace(/^libsql:\/\//, 'https://')
@@ -176,12 +176,22 @@ export async function getPendingIngestions(): Promise<QuarterRow[]> {
   return rows as unknown as QuarterRow[];
 }
 
-export async function registerQuarter(row: Omit<QuarterRow, 'ingestedAt'>): Promise<void> {
+/**
+ * `transcriptFiledAt` is the exchange broadcast time of the transcript
+ * ("YYYY-MM-DD HH:MM:SS" IST) when known; price reactions to red flags are
+ * measured from it. `publishedAt` stays the approximate results date.
+ */
+export async function registerQuarter(row: Omit<QuarterRow, 'ingestedAt'> & { transcriptFiledAt?: string }): Promise<void> {
   await db().execute({
-    sql: `INSERT INTO quarter_index (ticker, quarter, fiscal_year, published_at, pdf_url, ingested_at)
-          VALUES (?, ?, ?, ?, ?, '')
-          ON CONFLICT (ticker, quarter) DO UPDATE SET pdf_url = excluded.pdf_url`,
-    args: [row.ticker, row.quarter, row.fiscalYear, row.publishedAt, row.pdfUrl],
+    // The production table predates init-db.ts and has `source TEXT NOT NULL`;
+    // leaving it out made every discovery insert fail.
+    sql: `INSERT INTO quarter_index (ticker, quarter, fiscal_year, published_at, source, pdf_url, ingested_at, transcript_filed_at)
+          VALUES (?, ?, ?, ?, ?, ?, '', ?)
+          ON CONFLICT (ticker, quarter) DO UPDATE SET
+            pdf_url = excluded.pdf_url,
+            source  = excluded.source,
+            transcript_filed_at = COALESCE(excluded.transcript_filed_at, quarter_index.transcript_filed_at)`,
+    args: [row.ticker, row.quarter, row.fiscalYear, row.publishedAt, row.pdfUrl, row.pdfUrl, row.transcriptFiledAt ?? null],
   });
 }
 
@@ -627,6 +637,7 @@ export interface DailyFilingRow {
   filingCat:    string;      // normalised: earnings | board | investor_meet | ...
   insights:     FilingInsights | null;
   sentiment:    string;
+  filedAt?:     string;      // exchange broadcast time, "YYYY-MM-DD HH:MM:SS" IST
   createdAt:    string;
 }
 
@@ -642,18 +653,20 @@ export async function saveDailyFiling(row: Omit<DailyFilingRow, 'id' | 'createdA
   const result = await db().execute({
     sql: `INSERT INTO daily_filings
           (ticker, filing_date, category, title, pdf_url, text_content,
-           importance, is_important, filing_cat, insights, sentiment)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           importance, is_important, filing_cat, insights, sentiment, filed_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (pdf_url) DO UPDATE SET
             text_content = excluded.text_content,
             importance   = excluded.importance,
             is_important = excluded.is_important,
             insights     = excluded.insights,
-            sentiment    = excluded.sentiment`,
+            sentiment    = excluded.sentiment,
+            filed_at     = COALESCE(excluded.filed_at, daily_filings.filed_at)`,
     args: [
       row.ticker, row.filingDate, row.category, row.title, row.pdfUrl,
       row.textContent, row.importance, row.isImportant ? 1 : 0,
       row.filingCat, JSON.stringify(row.insights ?? null), row.sentiment,
+      row.filedAt || null,
     ],
   });
   return Number(result.lastInsertRowid);

@@ -1,4 +1,3 @@
-import { ChatGroq } from '@langchain/groq';
 import { SystemMessage, HumanMessage } from '@langchain/core/messages';
 import { StringOutputParser } from '@langchain/core/output_parsers';
 import {
@@ -10,15 +9,37 @@ import {
   ManagementQualitySchema,
   SectorAnalysisSchema,
   TranscriptDiffSchema,
+  TranscriptDigestSchema,
 } from '../schemas';
+import { chatModel, withLlmSlot } from './llm';
+import { mergeRedFlags, dedupePromises } from '../utils/transcript';
 
-function model(temperature = 0.1, maxTokens = 1024): ChatGroq {
-  return new ChatGroq({
-    apiKey: process.env.GROQ_API_KEY,
-    model: process.env.GROQ_MODEL ?? 'llama-3.1-70b-versatile',
-    temperature,
-    maxTokens,
-  });
+function model(temperature = 0.1, maxTokens = 1024) {
+  return chatModel('main', { temperature, maxTokens });
+}
+
+/**
+ * Runs `fn` over every window. A failed window is logged and skipped; if every
+ * window fails the error is thrown, so callers never store "nothing found" for
+ * what was really an API outage.
+ */
+async function mapWindows<T>(label: string, windows: string[], fn: (w: string, i: number) => Promise<T[]>): Promise<T[]> {
+  const out: T[] = [];
+  let failures = 0;
+  let lastError: unknown;
+  for (let i = 0; i < windows.length; i++) {
+    try {
+      out.push(...await fn(windows[i], i));
+    } catch (err) {
+      failures++;
+      lastError = err;
+      console.error(`[${label}] window ${i + 1}/${windows.length} failed:`, String(err).slice(0, 200));
+    }
+  }
+  if (windows.length && failures === windows.length) {
+    throw new Error(`${label}: all ${failures} windows failed — ${String((lastError as Error)?.message ?? lastError)}`);
+  }
+  return out;
 }
 
 // ── Synthesis ─────────────────────────────────────────────────────────────────
@@ -29,12 +50,11 @@ Always cite the specific ticker, quarter, and speaker role (CEO/CFO).
 If the context is insufficient, say so — do not infer or fabricate financial data.`;
 
 export async function synthesize(query: string, context: string): Promise<string> {
-  return model(0.1, 1024)
-    .pipe(new StringOutputParser())
-    .invoke([
-      new SystemMessage(SYNTHESIS_SYSTEM),
-      new HumanMessage(`Transcript context:\n\n${context}\n\n---\n\nQuestion: ${query}`),
-    ]);
+  const chain = model(0.1, 1024).pipe(new StringOutputParser());
+  return withLlmSlot(() => chain.invoke([
+    new SystemMessage(SYNTHESIS_SYSTEM),
+    new HumanMessage(`Transcript context:\n\n${context}\n\n---\n\nQuestion: ${query}`),
+  ]));
 }
 
 // ── Red Flag Scanner ──────────────────────────────────────────────────────────
@@ -47,10 +67,15 @@ export interface DetectedRedFlag {
   evidence: string;
 }
 
+/**
+ * Scans every window of the transcript (the old code read only the first 10,000
+ * characters, which never reached the Q&A where deflection and pushback happen)
+ * and keeps the most severe occurrence of each flag type.
+ */
 export async function scanRedFlags(
   ticker: string,
   quarter: string,
-  transcriptText: string,
+  windows: string[],
 ): Promise<DetectedRedFlag[]> {
   const systemPrompt = `You are a financial risk analyst scanning an earnings call transcript for ${ticker} ${quarter} for qualitative red flags.
 
@@ -70,21 +95,19 @@ Flag taxonomy — check each and include ONLY if genuinely present:
 For each flag FOUND: flagType (exact key), severity ("Low"|"Medium"|"High"), evidence (verbatim quote under 150 chars).
 Return empty flags array if none found.`;
 
-  try {
-    const result = await model(0.1, 1200)
-      .withStructuredOutput(RedFlagArraySchema)
-      .invoke([
-        new SystemMessage(systemPrompt),
-        new HumanMessage(transcriptText.slice(0, 10000)),
-      ]);
+  const structured = model(0.1, 1200).withStructuredOutput(RedFlagArraySchema);
+  const flags = await mapWindows('redflags', windows, async (text, i) => {
+    const result = await withLlmSlot(() => structured.invoke([
+      new SystemMessage(systemPrompt),
+      new HumanMessage(`Transcript part ${i + 1} of ${windows.length}:\n\n${text}`),
+    ]));
     return result.flags.map(f => ({
       flagType: f.flagType as RedFlagType,
       severity: f.severity,
       evidence: f.evidence.slice(0, 150),
     }));
-  } catch {
-    return [];
-  }
+  });
+  return mergeRedFlags(flags);
 }
 
 // ── Guidance Promise Extraction ───────────────────────────────────────────────
@@ -98,10 +121,11 @@ interface ExtractedPromise {
   directLanguage:  boolean;
 }
 
+/** Extracts from every window of management text, then drops repeated quotes. */
 export async function extractGuidancePromises(
   ticker: string,
   quarter: string,
-  transcriptText: string,
+  windows: string[],
 ): Promise<ExtractedPromise[]> {
   const systemPrompt = `You are a financial analyst extracting forward-looking management commitments from an earnings call transcript for ${ticker} ${quarter}.
 
@@ -118,14 +142,13 @@ For each promise:
 
 Return 0–10 promises. Return empty promises array if no clear commitments found.`;
 
-  try {
-    const result = await model(0.1, 1500)
-      .withStructuredOutput(ExtractedPromisesSchema)
-      .invoke([
-        new SystemMessage(systemPrompt),
-        new HumanMessage(transcriptText.slice(0, 8000)),
-      ]);
-    return result.promises.map(p => ({
+  const structured = model(0.1, 1500).withStructuredOutput(ExtractedPromisesSchema);
+  const promises = await mapWindows('promises', windows, async (text, i) => {
+    const result = await withLlmSlot(() => structured.invoke([
+      new SystemMessage(systemPrompt),
+      new HumanMessage(`Management remarks, part ${i + 1} of ${windows.length}:\n\n${text}`),
+    ]));
+    return result.promises.slice(0, 10).map(p => ({
       speaker:         p.speaker,
       category:        p.category,
       verbatimQuote:   p.verbatimQuote.slice(0, 200),
@@ -133,15 +156,14 @@ Return 0–10 promises. Return empty promises array if no clear commitments foun
       confidenceScore: p.confidenceScore,
       directLanguage:  p.directLanguage,
     }));
-  } catch {
-    return [];
-  }
+  });
+  return dedupePromises(promises);
 }
 
 // ── Promise Resolution ────────────────────────────────────────────────────────
 
-interface PromiseResolution {
-  status:         'delivered' | 'partial' | 'missed';
+export interface PromiseResolution {
+  status:         'delivered' | 'partial' | 'missed' | 'pending';
   resolutionNote: string;
 }
 
@@ -160,20 +182,18 @@ Checking against: ${newQuarter}
 Based on transcript excerpts below, determine if this promise was:
 - delivered: explicitly confirmed with evidence
 - partial: partially addressed but not fully delivered
-- missed: contradicted, delayed, or unmentioned despite timeframe passing
+- missed: contradicted, delayed, or unmentioned even though the promised timeframe has passed by ${newQuarter}
+- pending: the timeframe has not passed yet and the excerpts do not settle it either way
 
 resolutionNote: one sentence explaining the evidence (or lack thereof).`;
 
-  try {
-    return await model(0.1, 300)
-      .withStructuredOutput(PromiseResolutionSchema)
-      .invoke([
-        new SystemMessage(systemPrompt),
-        new HumanMessage(newQuarterChunks.slice(0, 4000)),
-      ]) as PromiseResolution;
-  } catch {
-    return { status: 'missed', resolutionNote: '' };
-  }
+  // Errors propagate. The old catch returned 'missed', so a Groq outage marked
+  // promises as broken and dragged down management scores.
+  const structured = model(0.1, 300).withStructuredOutput(PromiseResolutionSchema);
+  return withLlmSlot(() => structured.invoke([
+    new SystemMessage(systemPrompt),
+    new HumanMessage(newQuarterChunks.slice(0, 12000)),
+  ])) as Promise<PromiseResolution>;
 }
 
 // ── Management Quality Scoring ────────────────────────────────────────────────
@@ -214,26 +234,23 @@ Extract:
 - deliveryNote: ${hasPrev ? 'one sentence on whether current quarter addressed prior promises' : 'empty string'}
 - summary: one sentence on overall management quality this quarter`;
 
-  try {
-    const result = await model(0.1, 600)
-      .withStructuredOutput(ManagementQualitySchema)
-      .invoke([
-        new SystemMessage(systemPrompt),
-        new HumanMessage(userContent),
-      ]);
-    const clamp = (n: number) => Math.round(Math.max(0, Math.min(100, n)));
-    return {
-      confidence:    clamp(result.confidence),
-      transparency:  clamp(result.transparency),
-      followThrough: clamp(result.followThrough),
-      summary:       result.summary,
-      hedgeWords:    result.hedgeWords,
-      prevPromises:  result.prevPromises,
-      deliveryNote:  result.deliveryNote,
-    };
-  } catch {
-    return { confidence: 50, transparency: 50, followThrough: 50, summary: '', hedgeWords: [], prevPromises: [], deliveryNote: '' };
-  }
+  // Errors propagate. The old catch returned 50/50/50, which was then saved as
+  // that quarter's real score.
+  const structured = model(0.1, 600).withStructuredOutput(ManagementQualitySchema);
+  const result = await withLlmSlot(() => structured.invoke([
+    new SystemMessage(systemPrompt),
+    new HumanMessage(userContent),
+  ]));
+  const clamp = (n: number) => Math.round(Math.max(0, Math.min(100, n)));
+  return {
+    confidence:    clamp(result.confidence),
+    transparency:  clamp(result.transparency),
+    followThrough: clamp(result.followThrough),
+    summary:       result.summary,
+    hedgeWords:    result.hedgeWords,
+    prevPromises:  result.prevPromises,
+    deliveryNote:  result.deliveryNote,
+  };
 }
 
 // ── Sector Narrative Extraction ───────────────────────────────────────────────
@@ -291,12 +308,11 @@ Also identify up to 3 emerging topics — themes present NOW that did NOT appear
 - context: one sentence on why it's new/significant`;
 
   try {
-    const result = await model(0.15, 1200)
-      .withStructuredOutput(SectorAnalysisSchema)
-      .invoke([
-        new SystemMessage(systemPrompt),
-        new HumanMessage(context),
-      ]);
+    const structured = model(0.15, 1200).withStructuredOutput(SectorAnalysisSchema);
+    const result = await withLlmSlot(() => structured.invoke([
+      new SystemMessage(systemPrompt),
+      new HumanMessage(context),
+    ]));
     const validTickers = new Set(tickers);
     const filterTickers = (arr: string[]) => arr.filter(t => validTickers.has(t));
     return {
@@ -328,14 +344,37 @@ export interface TranscriptDiffResult {
   phraseChanges: Array<{ before: string; after: string }>;
 }
 
+/**
+ * Map step for the diff: condenses one quarter's full transcript into a topic
+ * list. The diff then compares two digests instead of the first 4,000 characters
+ * of each quarter.
+ */
+export async function digestTranscript(ticker: string, quarter: string, windows: string[]): Promise<string> {
+  const systemPrompt = `You are summarising part of the ${ticker} ${quarter} earnings call.
+List the distinct business topics discussed in this part (up to 8). For each give:
+- topic: 2–6 word name (e.g. "export order book", "API price erosion")
+- stance: one short sentence on what management said, keeping numbers and hedging words as spoken`;
+
+  const structured = chatModel('fast', { temperature: 0, maxTokens: 700 }).withStructuredOutput(TranscriptDigestSchema);
+  const topics = await mapWindows('digest', windows, async (text, i) => {
+    const result = await withLlmSlot(() => structured.invoke([
+      new SystemMessage(systemPrompt),
+      new HumanMessage(`Part ${i + 1} of ${windows.length}:\n\n${text}`),
+    ]));
+    return result.topics.slice(0, 8);
+  });
+  return topics.map(t => `- ${t.topic}: ${t.stance}`).join('\n');
+}
+
 export async function semanticDiff(
   ticker: string,
   q1: string,
   q2: string,
-  q1Text: string,
-  q2Text: string,
+  q1Digest: string,
+  q2Digest: string,
 ): Promise<TranscriptDiffResult> {
   const systemPrompt = `You are a financial analyst comparing two earnings call transcripts for ${ticker}.
+Each quarter is given as a topic digest covering the whole call (topic: what management said).
 
 Compare ${q1} (PREVIOUS) vs ${q2} (CURRENT) management commentary.
 
@@ -347,12 +386,11 @@ Identify:
 - summary: 2–3 sentences on what changed, what disappeared, and what it signals`;
 
   try {
-    const result = await model(0.1, 800)
-      .withStructuredOutput(TranscriptDiffSchema)
-      .invoke([
-        new SystemMessage(systemPrompt),
-        new HumanMessage(`=== ${q1} ===\n${q1Text.slice(0, 4000)}\n\n=== ${q2} ===\n${q2Text.slice(0, 4000)}`),
-      ]);
+    const structured = model(0.1, 800).withStructuredOutput(TranscriptDiffSchema);
+    const result = await withLlmSlot(() => structured.invoke([
+      new SystemMessage(systemPrompt),
+      new HumanMessage(`=== ${q1} ===\n${q1Digest.slice(0, 20000)}\n\n=== ${q2} ===\n${q2Digest.slice(0, 20000)}`),
+    ]));
     return {
       droppedTopics: result.droppedTopics,
       newTopics:     result.newTopics,
@@ -360,7 +398,8 @@ Identify:
       toneShift:     result.toneShift,
       summary:       result.summary,
     };
-  } catch {
+  } catch (err) {
+    console.error('[diff] semantic diff failed:', String(err).slice(0, 200));
     return { droppedTopics: [], newTopics: [], phraseChanges: [], toneShift: '', summary: '' };
   }
 }

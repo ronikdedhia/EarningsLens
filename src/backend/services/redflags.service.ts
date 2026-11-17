@@ -8,7 +8,7 @@ export async function scanAndSaveRedFlags(
   const state = await redFlagsGraph.invoke({
     ticker,
     quarter,
-    chunks: '',
+    windows: [],
     flags:  [],
     result: [],
   });

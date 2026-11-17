@@ -3,12 +3,23 @@ import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
 
-const CURL_ARGS = (url: string) => [
-  '-sL', url,
-  '-H', 'Referer: https://www.bseindia.com/',
+function referer(url: string): string {
+  try {
+    const host = new URL(url).hostname;
+    if (/nseindia\.(com|in)$/.test(host)) return 'https://www.nseindia.com/';
+  } catch { /* fall through */ }
+  return 'https://www.bseindia.com/';
+}
+
+export const CURL_ARGS = (url: string) => [
+  '-sL',
+  '--proto', '=https,http',
+  '-H', `Referer: ${referer(url)}`,
   '-H', 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   '--max-time', '30',
   '--output', '-',
+  // URL last, after "--", so a value starting with "-" can never be read as a curl option
+  '--', url,
 ];
 
 export async function fetchPdfBuffer(url: string): Promise<Buffer> {

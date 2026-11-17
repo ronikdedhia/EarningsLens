@@ -18,6 +18,7 @@ const NAV: NavItem[] = [
   { href: '/redflags',   label: 'Red Flags',    icon: '⚑', requiresAuth: true  },
   { href: '/sector',      label: 'Sector Pulse', icon: '◈', requiresAuth: true  },
   { href: '/daily-feed',  label: 'Daily Feed',   icon: '◉', requiresAuth: true  },
+  { href: '/scorecard',   label: 'Scorecard',    icon: '▤', requiresAuth: true  },
 ];
 
 export default function NavBar() {

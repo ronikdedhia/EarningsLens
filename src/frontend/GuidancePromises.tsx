@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { apiFetch } from '@/frontend/api';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
@@ -182,7 +183,7 @@ export default function GuidancePromises() {
     setLoading(true);
     setError('');
     try {
-      const res  = await fetch(`${API}/api/promises?ticker=${encodeURIComponent(t)}`);
+      const res  = await apiFetch(`${API}/api/promises?ticker=${encodeURIComponent(t)}`);
       const data = await res.json();
       setPromises(data.promises ?? []);
     } catch {
@@ -207,7 +208,7 @@ export default function GuidancePromises() {
     if (!quarter || !ticker) return;
     setExtracting(true);
     try {
-      const res  = await fetch(`${API}/api/promises/extract`, {
+      const res  = await apiFetch(`${API}/api/promises/extract`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ ticker, quarter: quarter.trim() }),

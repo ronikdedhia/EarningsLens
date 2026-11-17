@@ -15,8 +15,13 @@ services:
         sync: false        # set in Render dashboard → your Vercel URL
       - key: GROQ_API_KEY
         sync: false
+      # llama-3.1-8b-instant was shut down by Groq on 2026-08-16
       - key: GROQ_MODEL
-        value: llama-3.1-8b-instant
+        value: openai/gpt-oss-120b
+      - key: GROQ_FAST_MODEL
+        value: openai/gpt-oss-20b
+      - key: CLERK_SECRET_KEY
+        sync: false        # same value as the frontend's CLERK_SECRET_KEY; backend verifies session tokens with it
       - key: HUGGINGFACE_API_TOKEN
         sync: false
       - key: QDRANT_URL

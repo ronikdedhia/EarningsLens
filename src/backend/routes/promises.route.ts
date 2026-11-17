@@ -18,8 +18,12 @@ router.post('/extract', async (req: Request, res: Response) => {
   const { ticker, quarter } = req.body;
   if (!ticker || !quarter) return res.status(400).json({ error: 'ticker and quarter required' });
 
-  const promises = await extractPromisesForQuarter(ticker.toUpperCase(), quarter);
-  return res.json({ promises, extracted: promises.length });
+  try {
+    const promises = await extractPromisesForQuarter(ticker.toUpperCase(), quarter);
+    return res.json({ promises, extracted: promises.length });
+  } catch (err) {
+    return res.status(502).json({ error: (err as Error).message });
+  }
 });
 
 // POST /api/promises/resolve  { ticker, quarter }  — check pending promises against new quarter
@@ -27,8 +31,12 @@ router.post('/resolve', async (req: Request, res: Response) => {
   const { ticker, quarter } = req.body;
   if (!ticker || !quarter) return res.status(400).json({ error: 'ticker and quarter required' });
 
-  const { resolved } = await resolvePromisesForQuarter(ticker.toUpperCase(), quarter);
-  return res.json({ resolved });
+  try {
+    const { resolved } = await resolvePromisesForQuarter(ticker.toUpperCase(), quarter);
+    return res.json({ resolved });
+  } catch (err) {
+    return res.status(502).json({ error: (err as Error).message });
+  }
 });
 
 export { router as promisesRouter };

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { Client } from '@upstash/qstash';
 import { QdrantClient } from '@qdrant/js-client-rest';
-import { notify } from '../services/telegram.service';
+import { notifyAsync } from '../services/telegram.service';
 import { qstashVerify } from '../middleware/qstash';
 import { sendWeeklyNewsletter, parseNewsletterCron } from '../services/newsletter.service';
 
@@ -33,8 +33,13 @@ keepaliveRouter.post('/test-telegram', async (_, res) => {
   if (!token || !chatId) {
     return res.status(500).json({ error: 'TELEGRAM_ACCESS_TOKEN or TELEGRAM_CHAT_ID not set in env' });
   }
-  notify('🧪 *EarningsLens* — Telegram test message. If you see this, the integration is working!');
-  return res.json({ status: 'sent', chatId });
+  try {
+    // Awaited so Telegram's own error (bad token, bot not in chat, …) comes back to the caller.
+    await notifyAsync('🧪 <b>EarningsLens</b> — Telegram test message. If you see this, the integration is working!');
+    return res.json({ status: 'sent', chatId });
+  } catch (err) {
+    return res.status(502).json({ status: 'failed', error: String((err as Error).message ?? err) });
+  }
 });
 
 keepaliveRouter.post('/ping', qstashVerify, async (_, res) => {
@@ -139,6 +144,21 @@ export async function registerNewsletterSchedule() {
   const cronExpr = parseNewsletterCron();
   await qstash.schedules.create({ destination: dest, cron: cronExpr });
   console.log(`[newsletter] QStash schedule registered → ${process.env.NEWSLETTER_SEND_TIME ?? '09:00'} IST Friday (${cronExpr} UTC)`);
+}
+
+export async function registerBriefsSchedule() {
+  const token = process.env.QSTASH_TOKEN;
+  const backendUrl = process.env.BACKEND_PUBLIC_URL;
+  if (!token || !backendUrl) return;
+
+  const dest = `${backendUrl}/api/market/briefs/run`;
+  const qstash = new Client({ token });
+  const existing = await qstash.schedules.list();
+  if (existing.some((s: { destination: string }) => s.destination === dest)) return;
+
+  // 19:00 IST = 13:30 UTC
+  await qstash.schedules.create({ destination: dest, cron: '30 13 * * *' });
+  console.log('[briefs] QStash schedule registered → 19:00 IST daily');
 }
 
 export async function registerRefreshSchedule() {

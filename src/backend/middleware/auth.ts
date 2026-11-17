@@ -19,6 +19,8 @@ const QSTASH_POST: RegExp[] = [
   /^\/daily-filings\/run$/,
   /^\/companies\/refresh-all$/,
   /^\/market\/briefs\/run$/,
+  // Authenticated by Telegram's secret-token header in the route itself.
+  /^\/telegram\/webhook$/,
 ];
 
 /** `path` is relative to /api, e.g. "/companies". */

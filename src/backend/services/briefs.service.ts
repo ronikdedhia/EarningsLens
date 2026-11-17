@@ -5,7 +5,10 @@ import {
   recentWatchFor, latestIngestedQuarter,
 } from './market-store.service';
 import { listCompanies, getPromises, getRedFlags, getCompany, type GuidancePromiseRow, type RedFlagRow } from './turso.service';
-import { buildQuarterViews, preferredViews, summaryLines, type QuarterView } from './financials.service';
+import { buildQuarterViews, preferredViews, summaryLines, crore, type QuarterView } from './financials.service';
+import { getValuation, valuationLines } from './valuation.service';
+import { listShareholding, compareHoldings, formatHoldingsMessage } from './shareholding.service';
+import { listFdaEvents, orderSummary, isBadFda, FDA_LABELS } from './corporate-events.service';
 import { isNotable, signalLine } from './signals.service';
 import type { SignalRow } from './market-store.service';
 
@@ -45,6 +48,8 @@ export interface BriefInput {
   redFlags:      RedFlagRow[];
   watchFor:      Array<{ date: string; watchFor: string }>;
   signals:       SignalRow[];
+  // Valuation, shareholding, FDA and order sections. Lines are already HTML-escaped.
+  extra?:        Array<{ title: string; lines: string[] }>;
 }
 
 const SEVERITY_ORDER: Record<string, number> = { High: 0, Medium: 1, Low: 2 };
@@ -90,6 +95,11 @@ export function buildBrief(b: BriefInput): string {
     out.push(...(notable.length ? notable : b.signals).slice(0, 5).map(signalLine));
   }
 
+  for (const s of b.extra ?? []) {
+    if (!s.lines.length) continue;
+    out.push('', `<b>${escapeHtml(s.title)}</b>`, ...s.lines.map(l => `  ${l}`));
+  }
+
   if (out.length === 1) out.push('', 'No stored history for this company yet.');
   return out.join('\n');
 }
@@ -108,7 +118,28 @@ export async function assembleBrief(ticker: string, meetingDate: string, descrip
   ]);
   const views = preferredViews(buildQuarterViews(financials));
   const redFlags = lastCall ? await getRedFlags(ticker, lastCall) : [];
+
+  const [valuation, holdings, fda, orders] = await Promise.all([
+    getValuation(ticker).then(valuationLines).catch(() => [] as string[]),
+    listShareholding(ticker).catch(() => []),
+    listFdaEvents({ ticker, sinceIso: addDays(today, -180), limit: 6 }).catch(() => []),
+    orderSummary(ticker).catch(() => null),
+  ]);
+  const cur = holdings[holdings.length - 1];
+  const holdingLines = cur
+    ? formatHoldingsMessage(ticker, cur, compareHoldings(holdings[holdings.length - 2] ?? null, cur)).split('\n').slice(1).map(l => l.trim())
+    : [];
+  const extra = [
+    { title: 'Valuation', lines: valuation.map(escapeHtml) },
+    { title: `Shareholding${cur ? ` (${cur.periodEnd})` : ''}`, lines: holdingLines },
+    { title: 'US FDA, last 6 months', lines: fda.map(e => `${isBadFda(e.eventType) ? '🔴' : '🟢'} ${escapeHtml(FDA_LABELS[e.eventType])}: ${escapeHtml(e.title.slice(0, 120))} <i>${escapeHtml(e.eventDate)}</i>`) },
+    { title: 'Order wins, last 12 months', lines: orders && orders.last12mCount
+      ? [escapeHtml(`${orders.last12mCount} orders, ${crore(orders.last12mInr)}${orders.coverage != null ? ` = ${orders.coverage.toFixed(2)}× TTM revenue` : ''}`)]
+      : [] },
+  ];
+
   return {
+    extra,
     ticker,
     name:              company?.name ?? ticker,
     meetingDate,

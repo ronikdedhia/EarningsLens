@@ -44,6 +44,19 @@ async function runPipeline(
   });
 }
 
+/** Rows of a single SELECT, each as an array of cell values. */
+async function queryRows(sql: string): Promise<unknown[][]> {
+  const res = await fetch(`${BASE}/v2/pipeline`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${process.env.TURSO_AUTH_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requests: [{ type: 'execute', stmt: { sql } }, { type: 'close' }] }),
+  });
+  if (!res.ok) throw new Error(`Turso HTTP ${res.status}: ${await res.text()}`);
+  const { results } = await res.json();
+  const rows = results[0]?.response?.result?.rows ?? [];
+  return rows.map((r: Array<{ value?: unknown }>) => r.map(c => c?.value ?? null));
+}
+
 // ── Create tables (skipped silently if already exist) ────────────────────────
 
 const CREATE_TABLES = [
@@ -187,7 +200,7 @@ const CREATE_TABLES = [
   // Stock and NIFTY 50 move 1, 5 and 20 sessions after each filing, red flag or signal
   `CREATE TABLE IF NOT EXISTS price_reactions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    event_type  TEXT NOT NULL CHECK (event_type IN ('filing','red_flag','signal')),
+    event_type  TEXT NOT NULL,   -- filing | red_flag | signal | fda
     event_id    INTEGER NOT NULL,
     ticker      TEXT NOT NULL,
     event_date  TEXT NOT NULL,
@@ -242,6 +255,50 @@ const CREATE_TABLES = [
     dedup_key     TEXT NOT NULL UNIQUE,
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
   )`,
+
+  // US FDA events: approvals and recalls from openFDA, warning letters / 483s /
+  // inspections / import alerts from the company's NSE disclosures
+  `CREATE TABLE IF NOT EXISTS fda_events (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker        TEXT NOT NULL,
+    event_type    TEXT NOT NULL,
+    event_date    TEXT NOT NULL,
+    event_minutes INTEGER,
+    source        TEXT NOT NULL,          -- nse | openfda
+    title         TEXT NOT NULL DEFAULT '',
+    detail        TEXT NOT NULL DEFAULT '',
+    url           TEXT NOT NULL DEFAULT '',
+    dedup_key     TEXT NOT NULL UNIQUE,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+
+  // Quarterly shareholding pattern from NSE's SHP XBRL; percentages are 0–100
+  `CREATE TABLE IF NOT EXISTS shareholding (
+    ticker        TEXT NOT NULL,
+    period_end    TEXT NOT NULL,
+    promoter      REAL, fii REAL, dii REAL, mf REAL, public_pct REAL,
+    total_shares  REAL,
+    shareholders  INTEGER,
+    holders       TEXT NOT NULL DEFAULT '[]',   -- named institutions at or above 1%
+    filed_at      TEXT NOT NULL DEFAULT '',
+    record_id     TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (ticker, period_end)
+  )`,
+
+  // Contract wins from NSE "Bagging/Receiving of orders" announcements
+  `CREATE TABLE IF NOT EXISTS order_wins (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker         TEXT NOT NULL,
+    announced_date TEXT NOT NULL,
+    value_inr      REAL,
+    currency       TEXT NOT NULL DEFAULT 'INR',
+    value_text     TEXT NOT NULL DEFAULT '',
+    client         TEXT NOT NULL DEFAULT '',
+    description    TEXT NOT NULL DEFAULT '',
+    method         TEXT NOT NULL DEFAULT 'none',  -- text | pdf | llm | none
+    source_url     TEXT NOT NULL UNIQUE,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
 ];
 
 // ── Migrations: add columns to existing tables ───────────────────────────────
@@ -257,6 +314,34 @@ const ADD_COLUMNS = [
   `ALTER TABLE quarter_index ADD COLUMN transcript_filed_at TEXT`,
   // Older databases created quarter_index with `source TEXT NOT NULL`; registerQuarter writes it.
   `ALTER TABLE quarter_index ADD COLUMN source TEXT NOT NULL DEFAULT ''`,
+  // Valuation inputs from the results XBRL (balance sheet only in Q2/Q4 filings)
+  `ALTER TABLE quarterly_financials ADD COLUMN shares REAL`,
+  `ALTER TABLE quarterly_financials ADD COLUMN debt   REAL`,
+  `ALTER TABLE quarterly_financials ADD COLUMN cash   REAL`,
+];
+
+// price_reactions was first created with CHECK (event_type IN ('filing','red_flag','signal')).
+// SQLite can't drop a CHECK, so rebuild the table once when the old definition is found.
+const REBUILD_PRICE_REACTIONS = [
+  `CREATE TABLE price_reactions_v2 (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type  TEXT NOT NULL,
+    event_id    INTEGER NOT NULL,
+    ticker      TEXT NOT NULL,
+    event_date  TEXT NOT NULL,
+    label       TEXT NOT NULL,
+    category    TEXT NOT NULL DEFAULT '',
+    base_date   TEXT,
+    ret_1d      REAL, ret_5d REAL, ret_20d REAL,
+    nifty_1d    REAL, nifty_5d REAL, nifty_20d REAL,
+    complete    INTEGER NOT NULL DEFAULT 0,
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(event_type, event_id)
+  )`,
+  `INSERT INTO price_reactions_v2 SELECT id, event_type, event_id, ticker, event_date, label, category, base_date,
+     ret_1d, ret_5d, ret_20d, nifty_1d, nifty_5d, nifty_20d, complete, updated_at FROM price_reactions`,
+  `DROP TABLE price_reactions`,
+  `ALTER TABLE price_reactions_v2 RENAME TO price_reactions`,
 ];
 
 // ── Indexes ───────────────────────────────────────────────────────────────────
@@ -279,6 +364,8 @@ const CREATE_INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_financials_ticker  ON quarterly_financials (ticker, period_end)`,
   `CREATE INDEX IF NOT EXISTS idx_meetings_date      ON board_meetings (meeting_date)`,
   `CREATE INDEX IF NOT EXISTS idx_signals_ticker     ON market_signals (ticker, event_date DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_fda_ticker         ON fda_events (ticker, event_date DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_orders_ticker      ON order_wins (ticker, announced_date DESC)`,
 ];
 
 // ── Seed companies ────────────────────────────────────────────────────────────
@@ -309,6 +396,13 @@ async function main() {
     await runPipeline([sql], { ignoreDuplicateColumn: true });
   }
   console.log('  ✓ pdf_url, ingested_at, bse_code, exchange (skipped if already present)');
+
+  const def = await queryRows(`SELECT sql FROM sqlite_master WHERE name = 'price_reactions'`);
+  if (/CHECK\s*\(\s*event_type/i.test(String(def[0]?.[0] ?? ''))) {
+    console.log('\nRebuilding price_reactions without the old event_type CHECK...');
+    await runPipeline(REBUILD_PRICE_REACTIONS);
+    console.log('  ✓ rebuilt');
+  }
 
   console.log('\nCreating indexes...');
   await runPipeline(CREATE_INDEXES);

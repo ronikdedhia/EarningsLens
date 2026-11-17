@@ -6,11 +6,14 @@ import { buildQuarterViews, relevantPromises } from '../services/financials.serv
 import { getPromises } from '../services/turso.service';
 import { istDate, addDays } from '../services/nse.service';
 import { runEveningJobs } from '../services/jobs.service';
+import { getValuation } from '../services/valuation.service';
+import { listShareholding, compareHoldings } from '../services/shareholding.service';
+import { listFdaEvents, listOrders, orderSummary, FDA_LABELS, isBadFda } from '../services/corporate-events.service';
 
 const router = Router();
 
 const ticker = (req: Request) => (req.query.ticker as string | undefined)?.trim().toUpperCase() || undefined;
-const EVENT_TYPES = new Set(['filing', 'red_flag', 'signal']);
+const EVENT_TYPES = new Set(['filing', 'red_flag', 'signal', 'fda']);
 
 // GET /api/market/reactions/summary[?ticker=X] — average move after each kind of event
 router.get('/reactions/summary', async (req: Request, res: Response) => {
@@ -49,6 +52,37 @@ router.get('/signals', async (req: Request, res: Response) => {
 router.get('/calendar', async (_req: Request, res: Response) => {
   const today = istDate(new Date());
   return res.json({ meetings: await listBoardMeetings(today, addDays(today, 45)) });
+});
+
+// GET /api/market/valuation?ticker=X — market cap, P/E and EV/EBITDA vs 2-year range
+router.get('/valuation', async (req: Request, res: Response) => {
+  const t = ticker(req);
+  if (!t) return res.status(400).json({ error: 'ticker required' });
+  return res.json(await getValuation(t));
+});
+
+// GET /api/market/shareholding?ticker=X — quarters with changes and flags
+router.get('/shareholding', async (req: Request, res: Response) => {
+  const t = ticker(req);
+  if (!t) return res.status(400).json({ error: 'ticker required' });
+  const rows = await listShareholding(t);
+  const quarters = rows.map((r, i) => ({ ...r, flags: compareHoldings(rows[i - 1] ?? null, r) }));
+  return res.json({ ticker: t, quarters });
+});
+
+// GET /api/market/fda?ticker=X&days=365
+router.get('/fda', async (req: Request, res: Response) => {
+  const days = Math.min(Math.max(parseInt(req.query.days as string) || 365, 1), 1500);
+  const events = await listFdaEvents({ ticker: ticker(req), sinceIso: addDays(istDate(new Date()), -days), limit: 300 });
+  return res.json({ events: events.map(e => ({ ...e, label: FDA_LABELS[e.eventType], bad: isBadFda(e.eventType) })) });
+});
+
+// GET /api/market/orders?ticker=X — order wins and 12-month inflow vs TTM revenue
+router.get('/orders', async (req: Request, res: Response) => {
+  const t = ticker(req);
+  if (!t) return res.status(400).json({ error: 'ticker required' });
+  const [orders, summary] = await Promise.all([listOrders(t), orderSummary(t)]);
+  return res.json({ ticker: t, summary, orders });
 });
 
 // POST /api/market/briefs/run — QStash, 19:00 IST

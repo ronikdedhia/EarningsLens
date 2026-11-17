@@ -25,7 +25,7 @@ interface Signal {
 }
 interface Meeting { ticker: string; meetingDate: string; purpose: string; briefSentAt: string | null }
 
-const LABELS: Record<string, string> = { filing: 'Filing importance', red_flag: 'Red flag severity', signal: 'Signal' };
+const LABELS: Record<string, string> = { filing: 'Filing importance', red_flag: 'Red flag severity', signal: 'Signal', fda: 'US FDA' };
 
 const pct = (v: number | null | undefined, d = 1) => (v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(d)}%`);
 const cr = (v: number | null) => (v == null ? '—' : (v / 1e7).toLocaleString('en-IN', { maximumFractionDigits: 1 }));
@@ -140,6 +140,117 @@ function SignalsList({ signals }: { signals: Signal[] }) {
   );
 }
 
+interface RangeT { current: number | null; min: number | null; median: number | null; max: number | null; percentile: number | null }
+interface ValuationT { asOf: string | null; price: number | null; marketCap: number | null; netDebt: number | null; pe: RangeT; evEbitda: RangeT; days: number }
+interface Holding { periodEnd: string; promoter: number | null; fii: number | null; dii: number | null; mf: number | null; shareholders: number | null; flags: { alerts: string[] } }
+interface Order { announcedDate: string; valueInr: number | null; client: string; description: string; sourceUrl: string }
+interface OrderSummaryT { last12mInr: number; last12mCount: number; unvalued: number; coverage: number | null; ttmRevenue: number | null }
+interface FdaEventT { id: number; eventDate: string; label: string; bad: boolean; title: string; url: string; source: string }
+
+function RangeBar({ label, r }: { label: string; r: RangeT }) {
+  if (r.current == null) return <div className="text-xs text-slate-500">{label}: n/a</div>;
+  const pos = r.min != null && r.max != null && r.max > r.min ? ((r.current - r.min) / (r.max - r.min)) * 100 : 50;
+  return (
+    <div className="text-xs space-y-1">
+      <div className="flex justify-between text-slate-300">
+        <span>{label} <b className="text-white">{r.current.toFixed(1)}×</b></span>
+        <span className="text-slate-500">2y {r.min?.toFixed(1)}–{r.max?.toFixed(1)} · median {r.median?.toFixed(1)} · {r.percentile?.toFixed(0)}% of days were cheaper</span>
+      </div>
+      <div className="relative h-1.5 rounded bg-slate-700">
+        <div className="absolute top-[-3px] h-3 w-1 rounded bg-amber-400" style={{ left: `calc(${Math.min(100, Math.max(0, pos))}% - 2px)` }} />
+      </div>
+    </div>
+  );
+}
+
+function ValuationCard({ v }: { v: ValuationT | null }) {
+  if (!v || v.marketCap == null) return <p className="text-xs text-slate-400">Not enough data yet (needs shares outstanding and four quarters of results).</p>;
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-slate-300">
+        Market cap <b className="text-white">₹{cr(v.marketCap)} Cr</b> at ₹{v.price?.toFixed(2)} ({v.asOf})
+        {v.netDebt != null && <> · net {v.netDebt >= 0 ? 'debt' : 'cash'} ₹{cr(Math.abs(v.netDebt))} Cr</>}
+      </p>
+      <RangeBar label="P/E" r={v.pe} />
+      <RangeBar label="EV/EBITDA" r={v.evEbitda} />
+      {v.days < 250 && <p className="text-[11px] text-slate-500">Range covers {v.days} trading days only.</p>}
+    </div>
+  );
+}
+
+function HoldingsTable({ rows }: { rows: Holding[] }) {
+  if (!rows.length) return <p className="text-xs text-slate-400">No shareholding filings stored yet.</p>;
+  const d = (a: number | null, b: number | null) => (a == null || b == null ? null : a - b);
+  const list = [...rows].reverse();
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead className="text-slate-400"><tr className="border-b border-slate-700">
+          <th className="text-left py-2">Quarter</th>
+          {['Promoter', 'FII', 'DII', 'MF'].map(h => <th key={h} className="text-right px-2">{h}</th>)}
+          <th className="text-right px-2">Shareholders</th>
+        </tr></thead>
+        <tbody>
+          {list.map((r, i) => {
+            const prev = list[i + 1];
+            const cell = (k: 'promoter' | 'fii' | 'dii' | 'mf') => {
+              const delta = prev ? d(r[k], prev[k]) : null;
+              return <td key={k} className="text-right px-2 text-slate-200">{r[k]?.toFixed(2) ?? '—'}%
+                {delta != null && Math.abs(delta) >= 0.01 && <span className={`ml-1 ${tone(delta)}`}>{delta > 0 ? '+' : ''}{delta.toFixed(2)}</span>}</td>;
+            };
+            return (
+              <tr key={r.periodEnd} className="border-b border-slate-800 align-top">
+                <td className="py-1.5 text-slate-200">{r.periodEnd}
+                  {r.flags.alerts.length > 0 && <ul className="mt-1">{r.flags.alerts.map((a, j) => <li key={j} className="text-[11px] text-amber-400">⚠ {a}</li>)}</ul>}
+                </td>
+                {cell('promoter')}{cell('fii')}{cell('dii')}{cell('mf')}
+                <td className="text-right px-2 text-slate-300">{r.shareholders?.toLocaleString('en-IN') ?? '—'}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function OrdersList({ orders, s }: { orders: Order[]; s: OrderSummaryT | null }) {
+  if (!orders.length) return <p className="text-xs text-slate-400">No order-win announcements found.</p>;
+  return (
+    <div className="space-y-2 text-xs">
+      {s && <p className="text-slate-300">Last 12 months: <b className="text-white">{s.last12mCount}</b> orders, <b className="text-white">₹{cr(s.last12mInr)} Cr</b>
+        {s.coverage != null && <> = <b className="text-amber-400">{s.coverage.toFixed(2)}×</b> TTM revenue (₹{cr(s.ttmRevenue)} Cr)</>}
+        {s.unvalued > 0 && <span className="text-slate-500"> · {s.unvalued} without a stated value</span>}</p>}
+      <ul className="space-y-1">
+        {orders.slice(0, 20).map(o => (
+          <li key={o.sourceUrl} className="flex gap-3 border-b border-slate-800 pb-1">
+            <span className="text-slate-500 w-20 shrink-0">{o.announcedDate}</span>
+            <span className="text-slate-200 w-24 shrink-0 text-right">{o.valueInr != null ? `₹${cr(o.valueInr)} Cr` : '—'}</span>
+            <a href={o.sourceUrl} target="_blank" rel="noreferrer" className="text-slate-300 hover:text-white">{o.client || o.description.slice(0, 90)}</a>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function FdaList({ events }: { events: FdaEventT[] }) {
+  if (!events.length) return <p className="text-xs text-slate-400">No US FDA events in the last 2 years.</p>;
+  return (
+    <ul className="space-y-1 text-xs">
+      {events.slice(0, 30).map(e => (
+        <li key={e.id} className="flex gap-3 border-b border-slate-800 pb-1">
+          <span className="text-slate-500 w-20 shrink-0">{e.eventDate}</span>
+          <span className={`w-44 shrink-0 ${e.bad ? 'text-rose-400' : 'text-emerald-400'}`}>{e.label}</span>
+          <a href={e.url} target="_blank" rel="noreferrer" className="text-slate-300 hover:text-white">{e.title}</a>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+const PHARMA = new Set(['WOCKPHARMA', 'MOREPENLAB', 'RUBICON', 'SUNPHARMA']);
+
 export default function Scorecard() {
   const tickers = useCompanyTickers();
   const [ticker, setTicker] = useState('');
@@ -148,6 +259,11 @@ export default function Scorecard() {
   const [quarters, setQuarters] = useState<QuarterView[]>([]);
   const [signals, setSignals] = useState<Signal[]>([]);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
+  const [valuation, setValuation] = useState<ValuationT | null>(null);
+  const [holdings, setHoldings] = useState<Holding[]>([]);
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [orderSum, setOrderSum] = useState<OrderSummaryT | null>(null);
+  const [fda, setFda] = useState<FdaEventT[]>([]);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -173,6 +289,16 @@ export default function Scorecard() {
       setEvents(s.events ?? 0);
       setQuarters(f.quarters ?? []);
       setSignals(g.signals ?? []);
+      if (ticker) {
+        const j = (p: string) => apiFetch(`${API}/api/market/${p}${q}`).then(r => (r.ok ? r.json() : null)).catch(() => null);
+        const [v, h, o, d] = await Promise.all([j('valuation'), j('shareholding'), j('orders'),
+          PHARMA.has(ticker) ? apiFetch(`${API}/api/market/fda${q}&days=730`).then(r => r.json()).catch(() => null) : Promise.resolve(null)]);
+        setValuation(v);
+        setHoldings(h?.quarters ?? []);
+        setOrders(o?.orders ?? []);
+        setOrderSum(o?.summary ?? null);
+        setFda(d?.events ?? []);
+      }
     } catch {
       setError('Could not load scorecard data.');
     }
@@ -220,9 +346,27 @@ export default function Scorecard() {
       {ticker && (
         <>
           <section className="glass rounded-xl p-4">
+            <h3 className="text-sm font-semibold text-white mb-2">Valuation — {ticker}</h3>
+            <ValuationCard v={valuation} />
+          </section>
+          <section className="glass rounded-xl p-4">
             <h3 className="text-sm font-semibold text-white mb-2">Quarterly results — {ticker}</h3>
             <FinancialsTable quarters={quarters} />
           </section>
+          <section className="glass rounded-xl p-4">
+            <h3 className="text-sm font-semibold text-white mb-2">Shareholding — {ticker}</h3>
+            <HoldingsTable rows={holdings} />
+          </section>
+          <section className="glass rounded-xl p-4">
+            <h3 className="text-sm font-semibold text-white mb-2">Order wins — {ticker}</h3>
+            <OrdersList orders={orders} s={orderSum} />
+          </section>
+          {PHARMA.has(ticker) && (
+            <section className="glass rounded-xl p-4">
+              <h3 className="text-sm font-semibold text-white mb-2">US FDA — {ticker}</h3>
+              <FdaList events={fda} />
+            </section>
+          )}
           <section className="glass rounded-xl p-4">
             <h3 className="text-sm font-semibold text-white mb-2">Insider, pledge and deal activity — {ticker}</h3>
             <SignalsList signals={signals} />

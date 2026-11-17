@@ -95,25 +95,40 @@ async function sendPart(chatId: string, html: string): Promise<void> {
 // burst of parts doesn't trip Telegram's per-chat limit.
 let queue: Promise<void> = Promise.resolve();
 
-/** Blocking send of an HTML message (escape dynamic text with escapeHtml). */
+/** Blocking send of an HTML message to the alerts chat (escape dynamic text with escapeHtml). */
 export async function notifyAsync(html: string): Promise<void> {
-  const token  = process.env.TELEGRAM_ACCESS_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
-  if (!token || !chatId) {
+  return sendTo(process.env.TELEGRAM_CHAT_ID, html);
+}
+
+/** Blocking send to a specific chat (bot replies). */
+export async function sendTo(chatId: string | number | undefined, html: string): Promise<void> {
+  const token = process.env.TELEGRAM_ACCESS_TOKEN;
+  if (!token || chatId == null || chatId === '') {
     console.log(`[telegram] no token/chat — would send: ${html.slice(0, 80)}`);
     return;
   }
+  const id = String(chatId);
   const parts = splitMessage(html);
   const job = queue.then(async () => {
     for (const part of parts) {
       _telegramsSent++;
       console.log(`[telegram] sending msg #${_telegramsSent}: ${part.slice(0, 80)}`);
-      await sendPart(chatId, part);
+      await sendPart(id, part);
       await sleep(350);
     }
   });
   queue = job.catch(() => {});
   return job;
+}
+
+/** Any Bot API method (setWebhook, getWebhookInfo, setMyCommands). Throws on ok:false. */
+export async function telegramApi<T = unknown>(method: string, body: Record<string, unknown> = {}): Promise<T> {
+  const res = await fetch(`${API()}/${method}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const data = await res.json() as { ok: boolean; result?: T; description?: string };
+  if (!data.ok) throw new Error(`Telegram ${method}: ${data.description ?? res.status}`);
+  return data.result as T;
 }
 
 // Fire-and-forget — call without await so it never blocks a response. Failures are logged.

@@ -317,6 +317,33 @@ export function parseResultFilings(data: unknown): NseResultFiling[] {
     .filter(f => f.seqId > 0 && f.periodEnd && /\.xml$/i.test(f.xbrlUrl));
 }
 
+/** Results up to Dec-2024 (older NSE endpoint, same XBRL layout). */
+export function parseLegacyResultFilings(data: unknown): NseResultFiling[] {
+  if (!Array.isArray(data)) return [];
+  return (data as Array<Record<string, string>>)
+    .filter(r => /quarter/i.test(r.period ?? '') && /non-cumulative/i.test(r.cumulative ?? 'Non-cumulative'))
+    .map(r => {
+      const filed = parseNseDateTime(r.broadCastDate) ?? parseNseDateTime(r.filingDate);
+      const hhmm = filed?.minutes == null ? '' : ` ${String(Math.floor(filed.minutes / 60)).padStart(2, '0')}:${String(filed.minutes % 60).padStart(2, '0')}`;
+      return {
+        seqId:     Number(r.seqNumber),
+        symbol:    String(r.symbol ?? '').toUpperCase(),
+        periodEnd: parseNseDateTime(r.toDate)?.date ?? '',
+        basis:     (/^consolidated/i.test(r.consolidated ?? '') ? 'Consolidated' : 'Standalone') as NseResultFiling['basis'],
+        audited:   r.audited ?? '',
+        revision:  false,
+        filedAt:   filed ? `${filed.date}${hhmm}` : '',
+        xbrlUrl:   r.xbrl ?? '',
+      };
+    })
+    .filter(f => f.seqId > 0 && f.periodEnd && /\.xml$/i.test(f.xbrlUrl));
+}
+
+export async function fetchLegacyResultFilings(symbol: string): Promise<NseResultFiling[]> {
+  const data = await nseGet('corporates-financial-results', { index: 'equities', symbol, period: 'Quarterly' });
+  return parseLegacyResultFilings(data);
+}
+
 export async function fetchResultFilings(symbol: string): Promise<NseResultFiling[]> {
   const data = await nseGet('integrated-filing-results', {
     index: 'equities', type: 'Integrated Filing- Financials', symbol, page: 1, size: 100,

@@ -66,6 +66,21 @@ export function rateLimitWaitSeconds(err: unknown): number | null {
   return 20;
 }
 
+/**
+ * Groq asked for a wait longer than we're willing to block for: that's the daily
+ * token cap, not the per-minute one. Callers treat it as "try again tomorrow".
+ */
+export class DailyLimitError extends Error {
+  constructor(public waitSeconds: number) {
+    super(`Groq daily token limit reached (retry in ${Math.round(waitSeconds / 60)} min)`);
+  }
+}
+
+function maxWaitSeconds(): number {
+  const n = Number(process.env.GROQ_MAX_WAIT_SECONDS);
+  return Number.isFinite(n) && n > 0 ? n : 90;
+}
+
 export async function withLlmSlot<T>(fn: () => Promise<T>): Promise<T> {
   if (active < maxConcurrency()) {
     active++;
@@ -82,6 +97,7 @@ export async function withLlmSlot<T>(fn: () => Promise<T>): Promise<T> {
       } catch (err) {
         const wait = rateLimitWaitSeconds(err);
         if (wait == null || attempt >= 8) throw err;
+        if (wait > maxWaitSeconds()) throw new DailyLimitError(wait);
         console.warn(`[llm] Groq rate limit, waiting ${wait.toFixed(1)}s`);
         await new Promise(r => setTimeout(r, Math.ceil((wait + 1) * 1000)));
       }

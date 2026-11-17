@@ -11,7 +11,7 @@ import {
   TranscriptDiffSchema,
   TranscriptDigestSchema,
 } from '../schemas';
-import { chatModel, withLlmSlot } from './llm';
+import { chatModel, withLlmSlot, DailyLimitError } from './llm';
 import { mergeRedFlags, dedupePromises } from '../utils/transcript';
 
 function model(temperature = 0.1, maxTokens = 1024) {
@@ -31,6 +31,9 @@ async function mapWindows<T>(label: string, windows: string[], fn: (w: string, i
     try {
       out.push(...await fn(windows[i], i));
     } catch (err) {
+      // Out of daily quota: store nothing, so the catch-up job redoes the whole quarter
+      // instead of keeping a result built from half the transcript.
+      if (err instanceof DailyLimitError) throw err;
       failures++;
       lastError = err;
       console.error(`[${label}] window ${i + 1}/${windows.length} failed:`, String(err).slice(0, 200));

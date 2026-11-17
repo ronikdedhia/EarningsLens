@@ -67,24 +67,41 @@ async function main() {
     console.log('Transcript filing dates…');
     await backfillTranscriptDates();
   }
-  // Not part of the default run: it calls Groq for every ingested quarter.
+  // Not part of the default run: it calls Groq for every ingested quarter, and
+  // stops when the daily token cap is reached (the 16:00 job continues 3 a day).
   if (args.includes('analysis')) {
     console.log('Promise extraction / resolution / red flags for ingested quarters without them…');
-    const { extractPromisesForQuarter, resolvePromisesForQuarter } = await import('../src/backend/services/promises.service');
-    const { scanAndSaveRedFlags } = await import('../src/backend/services/redflags.service');
-    const { rows } = await db().execute(
-      `SELECT qi.ticker, qi.quarter FROM quarter_index qi
-       WHERE qi.ingested_at IS NOT NULL AND qi.ingested_at != ''
-         AND NOT EXISTS (SELECT 1 FROM red_flags rf WHERE rf.ticker = qi.ticker AND rf.quarter = qi.quarter)
-         AND NOT EXISTS (SELECT 1 FROM guidance_promises gp WHERE gp.ticker = qi.ticker AND gp.quarter_promised = qi.quarter)
-       ORDER BY qi.ticker, qi.quarter`,
-    );
-    for (const r of rows) {
-      const t = String(r.ticker), q = String(r.quarter);
-      const p = await extractPromisesForQuarter(t, q).catch(e => { console.log(`  ! ${t} ${q} promises: ${String(e).slice(0, 100)}`); return []; });
-      await resolvePromisesForQuarter(t, q).catch(() => {});
-      const f = await scanAndSaveRedFlags(t, q).catch(e => { console.log(`  ! ${t} ${q} red flags: ${String(e).slice(0, 100)}`); return []; });
-      console.log(`  ${t} ${q}: ${p.length} promises, ${f.length} red flags`);
+    const { runAnalysisCatchUp } = await import('../src/backend/services/analysis-catchup.service');
+    const r = await runAnalysisCatchUp(1000);
+    console.log(`  done: ${r.done.join(', ') || 'none'}; ${r.remaining} left${r.stoppedByQuota ? ' (stopped: Groq daily cap)' : ''}`);
+  }
+  if (want('legacy')) {
+    console.log('Results before Mar-2025 + re-read all XBRL for shares/debt/cash…');
+    const f = await syncFinancials({ notifyOlderThanDays: 0, includeLegacy: true, reparse: true });
+    console.log(`  ${f.stored} quarter rows stored/updated`);
+    f.failures.forEach(x => console.log(`  ! ${x}`));
+  }
+  if (want('fda') || want('orders')) {
+    console.log('US FDA events and order wins, last 2 years…');
+    const { syncCorporateEvents } = await import('../src/backend/services/corporate-events.service');
+    const c = await syncCorporateEvents({ sinceDays: 730, announce: false });
+    console.log(`  ${c.fda.length} FDA events, ${c.orders.length} orders (${c.orders.filter(o => o.valueInr != null).length} with a value)`);
+    c.failures.forEach(x => console.log(`  ! ${x}`));
+  }
+  if (want('shareholding')) {
+    console.log('Shareholding, last 8 quarters…');
+    const { syncShareholding } = await import('../src/backend/services/shareholding.service');
+    const s = await syncShareholding({ quarters: 8, announce: false });
+    console.log(`  ${s.stored} quarters`);
+    s.failures.forEach(x => console.log(`  ! ${x}`));
+  }
+  if (want('valuation')) {
+    console.log('Valuation (2 years of prices)…');
+    const { getValuation } = await import('../src/backend/services/valuation.service');
+    const { listCompanies } = await import('../src/backend/services/turso.service');
+    for (const c of await listCompanies()) {
+      const v = await getValuation(c.ticker).catch(e => { console.log(`  ! ${c.ticker}: ${String(e).slice(0, 80)}`); return null; });
+      if (v) console.log(`  ${c.ticker.padEnd(11)} P/E ${v.pe.current?.toFixed(1) ?? 'n/a'} (2y ${v.pe.min?.toFixed(1) ?? '-'}–${v.pe.max?.toFixed(1) ?? '-'})  EV/EBITDA ${v.evEbitda.current?.toFixed(1) ?? 'n/a'}  ${v.days} days`);
     }
   }
   if (want('reactions')) {

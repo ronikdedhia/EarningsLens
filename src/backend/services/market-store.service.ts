@@ -36,7 +36,7 @@ export async function getPriceBars(ticker: string, fromIso: string): Promise<Dai
 
 // ── Events that need a price reaction ─────────────────────────────────────────
 
-export type EventType = 'filing' | 'red_flag' | 'signal';
+export type EventType = 'filing' | 'red_flag' | 'signal' | 'fda';
 
 export interface MarketEvent {
   type:     EventType;
@@ -57,7 +57,7 @@ function splitTimestamp(ts: unknown): { date: string; minutes: number | null } |
 /** Events since `sinceIso` that don't yet have a complete (20-day) reaction. */
 export async function listEventsNeedingReaction(sinceIso: string): Promise<MarketEvent[]> {
   const done = `SELECT event_id FROM price_reactions WHERE event_type = ? AND complete = 1`;
-  const [filings, flags, signals] = await Promise.all([
+  const [filings, flags, signals, fda] = await Promise.all([
     db().execute({
       sql: `SELECT id, ticker, filing_date, filed_at, importance, filing_cat FROM daily_filings
             WHERE filing_date >= ? AND id NOT IN (${done})`,
@@ -76,6 +76,11 @@ export async function listEventsNeedingReaction(sinceIso: string): Promise<Marke
             WHERE event_date >= ? AND signal_type != 'pledge' AND id NOT IN (${done})`,
       args: [sinceIso, 'signal'],
     }),
+    db().execute({
+      sql: `SELECT id, ticker, event_date, event_minutes, event_type, source FROM fda_events
+            WHERE event_date >= ? AND id NOT IN (${done})`,
+      args: [sinceIso, 'fda'],
+    }).catch(() => ({ rows: [] as Array<Record<string, unknown>> })),   // table absent before db:init
   ]);
 
   const events: MarketEvent[] = [];
@@ -100,6 +105,13 @@ export async function listEventsNeedingReaction(sinceIso: string): Promise<Marke
       type: 'signal', id: Number(r.id), ticker: String(r.ticker), date: String(r.event_date),
       minutes: r.event_minutes == null ? null : Number(r.event_minutes),
       label: `${r.signal_type}:${r.direction}`, category: String(r.category ?? ''),
+    });
+  }
+  for (const r of fda.rows) {
+    events.push({
+      type: 'fda', id: Number(r.id), ticker: String(r.ticker), date: String(r.event_date),
+      minutes: r.event_minutes == null ? null : Number(r.event_minutes),
+      label: String(r.event_type), category: String(r.source ?? ''),
     });
   }
   return events;
@@ -175,14 +187,18 @@ export interface FinancialRow {
   pat:          number | null;
   eps:          number | null;
   ebitda:       number | null;
+  shares?:      number | null;   // paid-up capital / face value
+  debt?:        number | null;   // current + non-current borrowings (balance-sheet quarters only)
+  cash?:        number | null;   // cash + other bank balances (balance-sheet quarters only)
   filedAt:      string;
   seqId:        number;
   sourceUrl:    string;
 }
 
-export async function knownResultSeqIds(ticker: string): Promise<Set<number>> {
-  const { rows } = await db().execute({ sql: 'SELECT seq_id FROM quarterly_financials WHERE ticker = ?', args: [ticker] });
-  return new Set(rows.map(r => Number(r.seq_id)));
+/** XBRL URLs already stored. Keyed by URL: the old and new NSE endpoints number filings differently. */
+export async function knownResultUrls(ticker: string): Promise<Set<string>> {
+  const { rows } = await db().execute({ sql: 'SELECT source_url FROM quarterly_financials WHERE ticker = ?', args: [ticker] });
+  return new Set(rows.map(r => String(r.source_url)));
 }
 
 /** Returns true when this is a new (ticker, period, basis) or a newer filing (revision) of it. */
@@ -190,18 +206,20 @@ export async function upsertFinancials(f: FinancialRow): Promise<boolean> {
   const res = await db().execute({
     sql: `INSERT INTO quarterly_financials
             (ticker, quarter, period_end, basis, revenue, other_income, finance_costs, depreciation,
-             exceptional, pbt, pat, eps, ebitda, filed_at, seq_id, source_url)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             exceptional, pbt, pat, eps, ebitda, shares, debt, cash, filed_at, seq_id, source_url)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (ticker, period_end, basis) DO UPDATE SET
             revenue = excluded.revenue, other_income = excluded.other_income,
             finance_costs = excluded.finance_costs, depreciation = excluded.depreciation,
             exceptional = excluded.exceptional, pbt = excluded.pbt, pat = excluded.pat,
-            eps = excluded.eps, ebitda = excluded.ebitda, filed_at = excluded.filed_at,
+            eps = excluded.eps, ebitda = excluded.ebitda, shares = excluded.shares,
+            debt = excluded.debt, cash = excluded.cash, filed_at = excluded.filed_at,
             seq_id = excluded.seq_id, source_url = excluded.source_url
-          WHERE excluded.seq_id > quarterly_financials.seq_id`,
+          WHERE excluded.seq_id > quarterly_financials.seq_id OR quarterly_financials.shares IS NULL`,
     args: [
       f.ticker, f.quarter, f.periodEnd, f.basis, f.revenue, f.otherIncome, f.financeCosts, f.depreciation,
-      f.exceptional, f.pbt, f.pat, f.eps, f.ebitda, f.filedAt, f.seqId, f.sourceUrl,
+      f.exceptional, f.pbt, f.pat, f.eps, f.ebitda, f.shares ?? null, f.debt ?? null, f.cash ?? null,
+      f.filedAt, f.seqId, f.sourceUrl,
     ],
   });
   return res.rowsAffected > 0;
@@ -210,7 +228,7 @@ export async function upsertFinancials(f: FinancialRow): Promise<boolean> {
 export async function listFinancials(ticker: string): Promise<FinancialRow[]> {
   const { rows } = await db().execute({
     sql: `SELECT ticker, quarter, period_end, basis, revenue, other_income, finance_costs, depreciation,
-                 exceptional, pbt, pat, eps, ebitda, filed_at, seq_id, source_url
+                 exceptional, pbt, pat, eps, ebitda, shares, debt, cash, filed_at, seq_id, source_url
           FROM quarterly_financials WHERE ticker = ? ORDER BY period_end`,
     args: [ticker],
   });
@@ -220,7 +238,8 @@ export async function listFinancials(ticker: string): Promise<FinancialRow[]> {
     basis: r.basis as FinancialRow['basis'],
     revenue: n(r.revenue), otherIncome: n(r.other_income), financeCosts: n(r.finance_costs),
     depreciation: n(r.depreciation), exceptional: n(r.exceptional), pbt: n(r.pbt), pat: n(r.pat),
-    eps: n(r.eps), ebitda: n(r.ebitda), filedAt: String(r.filed_at ?? ''), seqId: Number(r.seq_id),
+    eps: n(r.eps), ebitda: n(r.ebitda), shares: n(r.shares), debt: n(r.debt), cash: n(r.cash),
+    filedAt: String(r.filed_at ?? ''), seqId: Number(r.seq_id),
     sourceUrl: String(r.source_url ?? ''),
   }));
 }

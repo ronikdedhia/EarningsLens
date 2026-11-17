@@ -1,7 +1,7 @@
 import { xbrlFacts, num } from '../utils/xbrl';
 import { escapeHtml } from './telegram.service';
-import { fetchResultFilings, nseArchiveText, type NseResultFiling } from './nse.service';
-import { knownResultSeqIds, upsertFinancials, listFinancials, type FinancialRow } from './market-store.service';
+import { fetchResultFilings, fetchLegacyResultFilings, nseArchiveText, type NseResultFiling } from './nse.service';
+import { knownResultUrls, upsertFinancials, listFinancials, type FinancialRow } from './market-store.service';
 import { getPromises, listCompanies, type GuidancePromiseRow } from './turso.service';
 
 // Figures come from the XBRL file attached to each results filing: the same
@@ -38,7 +38,9 @@ function daysBetween(a: string, b: string): number {
 
 /** Reads the quarter (context OneD) from an Integrated Filing XBRL. Null if it isn't a single quarter. */
 export function parseResultsXbrl(xml: string): ParsedResults | null {
-  const q = xbrlFacts(xml).OneD;
+  const facts = xbrlFacts(xml);
+  const q = facts.OneD;
+  const bs = facts.OneI ?? {};   // balance sheet, present in half-year and annual filings
   if (!q) return null;
   const start = q.DateOfStartOfReportingPeriod;
   const end = q.DateOfEndOfReportingPeriod;
@@ -64,8 +66,18 @@ export function parseResultsXbrl(xml: string): ParsedResults | null {
                   ?? num(q.BasicEarningsLossPerShareFromContinuingOperations)
                   ?? num(q.BasicEarningsPerShareAfterExtraordinaryItems),
     ebitda:       null,
+    shares:       null,
+    debt:         null,
+    cash:         null,
   };
   row.ebitda = computeEbitda(row);
+
+  const paidUp = num(q.PaidUpValueOfEquityShareCapital);
+  const face = num(q.FaceValueOfEquityShareCapital);
+  row.shares = paidUp != null && face ? paidUp / face : null;
+  const sum = (...xs: Array<number | null>) => (xs.every(x => x == null) ? null : xs.reduce<number>((a, x) => a + (x ?? 0), 0));
+  row.debt = sum(num(bs.BorrowingsCurrent), num(bs.BorrowingsNoncurrent));
+  row.cash = sum(num(bs.CashAndCashEquivalents), num(bs.BankBalanceOtherThanCashAndCashEquivalents));
   return row;
 }
 
@@ -229,7 +241,10 @@ export interface NewResult {
  * Pulls new results filings for every tracked company. Returns a Telegram
  * message for each newly reported quarter (preferred basis only).
  */
-export async function syncFinancials(opts: { tickers?: string[]; notifyOlderThanDays?: number } = {}): Promise<{ stored: number; messages: NewResult[]; failures: string[] }> {
+// TTM figures at the start of a 2-year valuation window need the four quarters before it.
+const LEGACY_FROM = '2023-09-30';
+
+export async function syncFinancials(opts: { tickers?: string[]; notifyOlderThanDays?: number; includeLegacy?: boolean; reparse?: boolean } = {}): Promise<{ stored: number; messages: NewResult[]; failures: string[] }> {
   const tickers = opts.tickers ?? (await listCompanies()).map(c => c.ticker);
   const messages: NewResult[] = [];
   const failures: string[] = [];
@@ -239,8 +254,14 @@ export async function syncFinancials(opts: { tickers?: string[]; notifyOlderThan
 
   for (const ticker of tickers) {
     try {
-      const known = await knownResultSeqIds(ticker);
-      const fresh = latestFilings(await fetchResultFilings(ticker)).filter(f => !known.has(f.seqId));
+      // reparse: read every XBRL again (fills columns added later, e.g. shares/debt/cash)
+      const known = opts.reparse ? new Set<string>() : await knownResultUrls(ticker);
+      const filings = await fetchResultFilings(ticker);
+      // Pre-Mar-2025 quarters sit on NSE's older endpoint; needed for a 2-year valuation range.
+      if (opts.includeLegacy) {
+        filings.push(...(await fetchLegacyResultFilings(ticker).catch(() => [])).filter(f => f.periodEnd >= LEGACY_FROM));
+      }
+      const fresh = latestFilings(filings).filter(f => !known.has(f.xbrlUrl));
       const newKeys: string[] = [];
       for (const f of fresh) {
         try {

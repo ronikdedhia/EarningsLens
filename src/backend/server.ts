@@ -32,6 +32,8 @@ import { marketRouter } from './routes/market.route';
 import { registerBriefsSchedule } from './routes/keepalive.route';
 import { runDailyJobs, runEveningJobs } from './services/jobs.service';
 import { modelId } from './services/llm';
+import { telegramRouter } from './routes/telegram.route';
+import { registerWebhook } from './services/bot.service';
 import { getSystemStats, getTodayQueryCount } from './services/turso.service';
 
 const app = express();
@@ -66,6 +68,7 @@ app.use('/api/sector',      sectorRouter);
 app.use('/api/keepalive',      keepaliveRouter);
 app.use('/api/daily-filings', dailyFilingsRouter);
 app.use('/api/market',        marketRouter);
+app.use('/api/telegram',      telegramRouter);
 
 app.get('/health', (_, res) => res.json({ status: 'ok' }));
 
@@ -100,6 +103,10 @@ app.listen(PORT, async () => {
 
   setDailyReportHandler(sendDailyReport);
   registerKeepaliveSchedule().catch(console.error);
+  // Only the deployed server owns the webhook; a local dev server must not steal it.
+  if (process.env.RENDER || process.env.TELEGRAM_REGISTER_WEBHOOK === '1') {
+    registerWebhook().catch(err => console.error('[bot] webhook registration failed:', String(err)));
+  }
 
   // QStash and node-cron used to both fire every job. When the server was awake
   // that meant two daily scrapes and two newsletters at the same minute. Now

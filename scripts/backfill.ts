@@ -67,6 +67,26 @@ async function main() {
     console.log('Transcript filing dates…');
     await backfillTranscriptDates();
   }
+  // Not part of the default run: it calls Groq for every ingested quarter.
+  if (args.includes('analysis')) {
+    console.log('Promise extraction / resolution / red flags for ingested quarters without them…');
+    const { extractPromisesForQuarter, resolvePromisesForQuarter } = await import('../src/backend/services/promises.service');
+    const { scanAndSaveRedFlags } = await import('../src/backend/services/redflags.service');
+    const { rows } = await db().execute(
+      `SELECT qi.ticker, qi.quarter FROM quarter_index qi
+       WHERE qi.ingested_at IS NOT NULL AND qi.ingested_at != ''
+         AND NOT EXISTS (SELECT 1 FROM red_flags rf WHERE rf.ticker = qi.ticker AND rf.quarter = qi.quarter)
+         AND NOT EXISTS (SELECT 1 FROM guidance_promises gp WHERE gp.ticker = qi.ticker AND gp.quarter_promised = qi.quarter)
+       ORDER BY qi.ticker, qi.quarter`,
+    );
+    for (const r of rows) {
+      const t = String(r.ticker), q = String(r.quarter);
+      const p = await extractPromisesForQuarter(t, q).catch(e => { console.log(`  ! ${t} ${q} promises: ${String(e).slice(0, 100)}`); return []; });
+      await resolvePromisesForQuarter(t, q).catch(() => {});
+      const f = await scanAndSaveRedFlags(t, q).catch(e => { console.log(`  ! ${t} ${q} red flags: ${String(e).slice(0, 100)}`); return []; });
+      console.log(`  ${t} ${q}: ${p.length} promises, ${f.length} red flags`);
+    }
+  }
   if (want('reactions')) {
     console.log('Price reactions…');
     const r = await syncPriceReactions();

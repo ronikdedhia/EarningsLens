@@ -49,7 +49,9 @@ export const RedFlagArraySchema = z.object({
 export const ExtractedPromisesSchema = z.object({
   promises: z.array(z.object({
     speaker: z.string(),
-    category: z.enum(PROMISE_CATEGORIES),
+    // Free text, mapped onto PROMISE_CATEGORIES in code: an enum here made Groq
+    // reject the whole response whenever the model wrote e.g. "Margins".
+    category: z.string(),
     // Trimmed and capped in code; a schema limit rejects the whole response.
     verbatimQuote: z.string(),
     timeframe: z.string(),

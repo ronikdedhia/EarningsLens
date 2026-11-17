@@ -121,6 +121,21 @@ interface ExtractedPromise {
   directLanguage:  boolean;
 }
 
+/** "margins", "Revenue growth", "EBITDA" → a PROMISE_CATEGORIES value. */
+export function normalizeCategory(raw: string): string {
+  const s = raw.trim().toLowerCase();
+  const exact = PROMISE_CATEGORIES.find(c => c.toLowerCase() === s);
+  if (exact) return exact;
+  const rules: Array<[RegExp, string]> = [
+    [/margin|ebitda|profitab/, 'Margin'], [/revenue|sales|top.?line|growth/, 'Revenue'],
+    [/volume|capacity|utili[sz]ation|order/, 'Volume'], [/capex|capital exp|investment|plant/, 'Capex'],
+    [/hir|headcount|employee/, 'Hiring'], [/product|launch|pipeline|approval/, 'Product'],
+    [/regulat|usfda|fda|compliance/, 'Regulatory'], [/dividend|payout|buyback/, 'Dividend'],
+    [/guidance|outlook|target/, 'Guidance'],
+  ];
+  return rules.find(([re]) => re.test(s))?.[1] ?? 'Other';
+}
+
 /** Extracts from every window of management text, then drops repeated quotes. */
 export async function extractGuidancePromises(
   ticker: string,
@@ -150,7 +165,7 @@ Return 0–10 promises. Return empty promises array if no clear commitments foun
     ]));
     return result.promises.slice(0, 10).map(p => ({
       speaker:         p.speaker,
-      category:        p.category,
+      category:        normalizeCategory(p.category),
       verbatimQuote:   p.verbatimQuote.slice(0, 200),
       timeframe:       p.timeframe,
       confidenceScore: p.confidenceScore,

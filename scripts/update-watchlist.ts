@@ -104,7 +104,8 @@ async function main() {
   if (apply && discover) {
     const { discoverAndIngestTicker } = await import('../src/backend/routes/companies.route');
     for (const c of WATCHLIST) {
-      if ((await getIngestedQuarters(c.ticker)).length) continue;
+      // discoverAndIngestTicker skips quarters already ingested, so re-runs resume.
+      if ((await getIngestedQuarters(c.ticker)).length >= 4) continue;
       console.log(`\nDiscovering transcripts for ${c.ticker}…`);
       for (const r of await discoverAndIngestTicker(c.ticker, 4)) console.log(`  ${r.quarter}: ${r.status}`);
     }

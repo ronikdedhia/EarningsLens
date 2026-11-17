@@ -1,7 +1,7 @@
 import { Annotation, StateGraph, START, END } from '@langchain/langgraph';
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
 import { embedBatch } from '../services/embedding.service';
-import { upsertChunks, ensureCollection, type ChunkPayload } from '../services/qdrant.service';
+import { upsertChunks, ensureCollection, deleteQuarterChunks, type ChunkPayload } from '../services/qdrant.service';
 import { scoreBatch } from '../services/sentiment.service';
 import { isQuarterIngested, markIngested, saveSentimentScore } from '../services/turso.service';
 import { parseSpeakers } from '../utils/speaker-parser';
@@ -76,6 +76,7 @@ async function processTranscriptNode(state: typeof IngestAnnotation.State) {
     vectors.push(...await embedBatch(texts.slice(i, i + EMBED_BATCH)));
   }
   await ensureCollection(vectors[0].length);
+  await deleteQuarterChunks(t, quarter); // leftovers from an interrupted run
   const scores = await scoreBatch(texts);
 
   const points: UpsertPoint[] = items.map((item, i) => {

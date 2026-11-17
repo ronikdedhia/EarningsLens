@@ -1,6 +1,7 @@
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { modelId, isReasoningModel, withLlmSlot, DEFAULT_MAIN_MODEL, DEFAULT_FAST_MODEL } from '../src/backend/services/llm';
+import { modelId, isReasoningModel, withLlmSlot, rateLimitWaitSeconds, DEFAULT_MAIN_MODEL, DEFAULT_FAST_MODEL } from '../src/backend/services/llm';
+import { normalizeCategory } from '../src/backend/services/groq.service';
 import { parseSpeakers } from '../src/backend/utils/speaker-parser';
 import { concallDateToQuarter } from '../src/backend/services/screener.service';
 import { CURL_ARGS } from '../src/backend/utils/pdf';
@@ -36,6 +37,33 @@ test('withLlmSlot never runs more than GROQ_CONCURRENCY calls at once', async ()
   });
   await Promise.all(Array.from({ length: 12 }, task));
   assert.equal(peak, 2);
+});
+
+test('rateLimitWaitSeconds reads Groq\'s suggested delay', () => {
+  assert.equal(rateLimitWaitSeconds(new Error('429 Rate limit reached ... Please try again in 7.4s.')), 7.4);
+  assert.equal(rateLimitWaitSeconds(new Error('429 Rate limit reached ... Please try again in 1m2.5s.')), 62.5);
+  assert.equal(rateLimitWaitSeconds({ status: 429, message: 'slow down' }), 20);
+  assert.equal(rateLimitWaitSeconds(new Error('400 bad schema')), null);
+});
+
+test('withLlmSlot waits out a rate limit and retries', async () => {
+  process.env.GROQ_CONCURRENCY = '1';
+  let calls = 0;
+  const out = await withLlmSlot(async () => {
+    if (++calls === 1) throw new Error('429 Rate limit reached. Please try again in 0.01s.');
+    return 'ok';
+  });
+  assert.equal(out, 'ok');
+  assert.equal(calls, 2);
+});
+
+test('normalizeCategory maps free-text categories', () => {
+  assert.equal(normalizeCategory('Margins'), 'Margin');
+  assert.equal(normalizeCategory('EBITDA'), 'Margin');
+  assert.equal(normalizeCategory('revenue growth'), 'Revenue');
+  assert.equal(normalizeCategory('USFDA'), 'Regulatory');
+  assert.equal(normalizeCategory('capex'), 'Capex');
+  assert.equal(normalizeCategory('something else'), 'Other');
 });
 
 test('withLlmSlot releases the slot when the call throws', async () => {

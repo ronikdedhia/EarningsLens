@@ -33,8 +33,8 @@ export function chatModel(
     model,
     temperature,
     maxTokens: reasoning ? maxTokens + REASONING_HEADROOM : maxTokens,
-    // groq-sdk retries 429/5xx with backoff and honours retry-after.
-    maxRetries: 5,
+    // 5xx retries here; 429s are waited out in withLlmSlot with Groq's own delay.
+    maxRetries: 2,
     ...(reasoning ? { reasoningEffort: 'low' as const } : {}),
   });
 }
@@ -48,7 +48,22 @@ const waiting: Array<() => void> = [];
 
 function maxConcurrency(): number {
   const n = parseInt(process.env.GROQ_CONCURRENCY ?? '', 10);
-  return Number.isFinite(n) && n > 0 ? n : 2;
+  // 1 by default: on Groq's on-demand tier two concurrent transcript windows
+  // already exceed the 8K tokens/minute limit.
+  return Number.isFinite(n) && n > 0 ? n : 1;
+}
+
+/**
+ * Seconds Groq asks us to wait, from "Please try again in 7.4s" / "in 1m2.5s",
+ * or null when the error isn't a rate limit.
+ */
+export function rateLimitWaitSeconds(err: unknown): number | null {
+  const msg = String((err as { message?: string })?.message ?? err);
+  const status = (err as { status?: number })?.status;
+  if (status !== 429 && !/\b429\b|rate limit/i.test(msg)) return null;
+  const m = msg.match(/try again in (?:(\d+)m)?([\d.]+)s/i);
+  if (m) return (m[1] ? +m[1] * 60 : 0) + parseFloat(m[2]);
+  return 20;
 }
 
 export async function withLlmSlot<T>(fn: () => Promise<T>): Promise<T> {
@@ -59,7 +74,18 @@ export async function withLlmSlot<T>(fn: () => Promise<T>): Promise<T> {
     await new Promise<void>(resolve => waiting.push(resolve));
   }
   try {
-    return await fn();
+    // Groq's free/on-demand tier caps gpt-oss-120b at 8K tokens per minute, and
+    // its SDK retries give up long before the minute resets.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await fn();
+      } catch (err) {
+        const wait = rateLimitWaitSeconds(err);
+        if (wait == null || attempt >= 8) throw err;
+        console.warn(`[llm] Groq rate limit, waiting ${wait.toFixed(1)}s`);
+        await new Promise(r => setTimeout(r, Math.ceil((wait + 1) * 1000)));
+      }
+    }
   } finally {
     const next = waiting.shift();
     if (next) next();

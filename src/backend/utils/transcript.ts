@@ -32,7 +32,8 @@ export function orderChunks<T extends Pick<ChunkPayload, 'chunkIndex'>>(chunks: 
 
 export function analysisWindowChars(): number {
   const n = parseInt(process.env.ANALYSIS_WINDOW_CHARS ?? '', 10);
-  return Number.isFinite(n) && n >= 2000 ? n : 16000;
+  // ~2.5K tokens: one window plus prompt and answer stays well under an 8K TPM limit.
+  return Number.isFinite(n) && n >= 2000 ? n : 10000;
 }
 
 /**

@@ -95,6 +95,14 @@ export async function scrollChunks(
   return results.slice(0, maxResults);
 }
 
+/** Removes a quarter's chunks so a re-ingest after a crash doesn't duplicate them. */
+export async function deleteQuarterChunks(ticker: string, quarter: string): Promise<void> {
+  await client().delete(COLLECTION, {
+    wait: true,
+    filter: { must: [{ key: 'ticker', match: { value: ticker } }, { key: 'quarter', match: { value: quarter } }] },
+  });
+}
+
 export async function upsertChunks(
   points: Array<{ id: string; vector: number[]; payload: ChunkPayload }>
 ) {

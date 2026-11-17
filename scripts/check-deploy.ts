@@ -38,6 +38,12 @@ async function check(expected: string): Promise<boolean> {
     ok &&= match;
     console.log(`backend   ${match ? '✓' : '✗'} ${short(be.commit)}  started ${be.startedAt}  health=${typeof health === 'string' ? health : health.status}`);
     console.log(`          models ${JSON.stringify(be.models)}`);
+    const bot = (be.bot ?? {}) as { webhook?: string };
+    if (bot.webhook) {
+      const okBot = bot.webhook.startsWith('registered');
+      console.log(`          ${okBot ? '✓' : '✗'} telegram bot: ${bot.webhook}`);
+      ok &&= okBot;
+    }
     const missing = Object.entries((be.configured ?? {}) as Record<string, boolean>).filter(([, v]) => !v).map(([k]) => k);
     if (missing.length) { console.log(`          ✗ missing on Render: ${missing.join(', ')}`); ok = false; }
   }

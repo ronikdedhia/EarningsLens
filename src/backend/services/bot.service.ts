@@ -212,16 +212,21 @@ export async function registerWebhook(): Promise<void> {
     return;
   }
   const url = `${base}/api/telegram/webhook`;
-  try {
-    // Re-set every boot: cheap, and refreshes the secret if TELEGRAM_WEBHOOK_SECRET changed.
-    await telegramApi('setWebhook', { url, secret_token: webhookSecret(), allowed_updates: ['message'], drop_pending_updates: false });
-    await telegramApi('setMyCommands', { commands: COMMANDS });
-    botStatus.webhook = `registered → ${url}`;
-    console.log(`[bot] webhook registered → ${url}`);
-  } catch (err) {
-    botStatus.webhook = `failed: ${String((err as Error).message ?? err).slice(0, 150)}`;
-    throw err;
-  } finally {
-    botStatus.at = new Date().toISOString();
+  // Outbound network can be unavailable for the first seconds after a Render boot.
+  for (let attempt = 1; ; attempt++) {
+    try {
+      // Re-set every boot: cheap, and refreshes the secret if TELEGRAM_WEBHOOK_SECRET changed.
+      await telegramApi('setWebhook', { url, secret_token: webhookSecret(), allowed_updates: ['message'], drop_pending_updates: false });
+      await telegramApi('setMyCommands', { commands: COMMANDS });
+      botStatus.webhook = `registered → ${url}`;
+      botStatus.at = new Date().toISOString();
+      console.log(`[bot] webhook registered → ${url}`);
+      return;
+    } catch (err) {
+      botStatus.webhook = `failed (attempt ${attempt}): ${String((err as Error).message ?? err).slice(0, 150)}`;
+      botStatus.at = new Date().toISOString();
+      if (attempt >= 6) throw err;
+      await new Promise(r => setTimeout(r, 10_000 * attempt));
+    }
   }
 }

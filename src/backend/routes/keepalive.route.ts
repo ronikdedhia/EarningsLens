@@ -146,6 +146,18 @@ export async function registerNewsletterSchedule() {
   console.log(`[newsletter] QStash schedule registered → ${process.env.NEWSLETTER_SEND_TIME ?? '09:00'} IST Friday (${cronExpr} UTC)`);
 }
 
+/** Deletes QStash schedules whose destination ends with one of these paths. */
+export async function removeQstashSchedules(paths: string[]) {
+  const token = process.env.QSTASH_TOKEN;
+  if (!token) return;
+  const qstash = new Client({ token });
+  const existing = await qstash.schedules.list() as Array<{ scheduleId: string; destination: string }>;
+  for (const s of existing.filter(s => paths.some(p => s.destination.endsWith(p)))) {
+    await qstash.schedules.delete(s.scheduleId);
+    console.log('[qstash] removed schedule →', s.destination);
+  }
+}
+
 export async function registerBriefsSchedule() {
   const token = process.env.QSTASH_TOKEN;
   const backendUrl = process.env.BACKEND_PUBLIC_URL;

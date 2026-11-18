@@ -48,12 +48,38 @@ async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
   throw lastErr;
 }
 
+// When NSE refuses this server's IP (403), retry once through Firecrawl if a key
+// is set. Capped per day so a busy bot can't exhaust the plan's credits.
+let firecrawlDay = '';
+let firecrawlUsed = 0;
+
+async function viaFirecrawl<T>(url: string): Promise<T> {
+  const today = new Date().toISOString().slice(0, 10);
+  if (today !== firecrawlDay) { firecrawlDay = today; firecrawlUsed = 0; }
+  const cap = Number(process.env.FIRECRAWL_NSE_DAILY_CAP) || 25;
+  if (firecrawlUsed >= cap) throw new Error(`NSE blocked and Firecrawl daily cap (${cap}) reached`);
+  firecrawlUsed++;
+  const { data } = await axios.post<{ success: boolean; data?: { rawHtml?: string } }>(
+    'https://api.firecrawl.dev/v1/scrape', { url, formats: ['rawHtml'] },
+    { headers: { Authorization: `Bearer ${process.env.FIRECRAWL_API_KEY}` }, timeout: 90_000 },
+  );
+  const raw = data?.data?.rawHtml ?? '';
+  try { return JSON.parse(raw) as T; } catch { throw new Error('Firecrawl returned non-JSON for an NSE API call'); }
+}
+
 export async function nseGet<T = unknown>(path: string, params: Record<string, string | number>): Promise<T> {
-  return withRetry(async () => {
-    const { data } = await axios.get(`${NSE_API}/${path}`, { params, headers: HEADERS, timeout: 30_000 });
-    if (typeof data === 'string') throw new Error(`NSE ${path} returned HTML instead of JSON`);
-    return data as T;
-  });
+  try {
+    return await withRetry(async () => {
+      const { data } = await axios.get(`${NSE_API}/${path}`, { params, headers: HEADERS, timeout: 30_000 });
+      if (typeof data === 'string') throw new Error(`NSE ${path} returned HTML instead of JSON`);
+      return data as T;
+    });
+  } catch (err) {
+    const blocked = axios.isAxiosError(err) && err.response?.status === 403;
+    if (!blocked || !process.env.FIRECRAWL_API_KEY || process.env.NSE_FIRECRAWL_FALLBACK === '0') throw err;
+    const qs = new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)])).toString();
+    return viaFirecrawl<T>(`${NSE_API}/${path}?${qs}`);
+  }
 }
 
 /** Files on nsearchives (XBRL, XML). */

@@ -23,7 +23,8 @@ import { promisesRouter }    from './routes/promises.route';
 import { redflagsRouter }   from './routes/redflags.route';
 import { diffRouter }       from './routes/diff.route';
 import { sectorRouter }     from './routes/sector.route';
-import { keepaliveRouter, registerKeepaliveSchedule, registerDailyReportSchedule, registerDailyFilingsSchedule, registerNewsletterSchedule, registerRefreshSchedule, setDailyReportHandler, pingQdrantOnce } from './routes/keepalive.route';
+import { keepaliveRouter, registerKeepaliveSchedule, registerDailyReportSchedule, registerDailyFilingsSchedule, registerNewsletterSchedule, registerRefreshSchedule, setDailyReportHandler, pingQdrantOnce, removeQstashSchedules } from './routes/keepalive.route';
+import { latestJobRuns } from './services/job-runs.service';
 import { sendWeeklyNewsletter, parseNewsletterCron } from './services/newsletter.service';
 import { dailyFilingsRouter } from './routes/daily-filings.route';
 import { runRefreshAll } from './routes/companies.route';
@@ -75,7 +76,8 @@ app.get('/health', (_, res) => res.json({ status: 'ok' }));
 // Public deploy check (npm run check-deploy). Reports which commit is running
 // and whether required settings exist — never their values.
 const STARTED_AT = new Date().toISOString();
-app.get('/version', (_, res) => res.json({
+app.get('/version', async (_, res) => res.json({
+  jobs:      await latestJobRuns(),
   service:   'backend',
   commit:    process.env.RENDER_GIT_COMMIT ?? null,
   startedAt: STARTED_AT,
@@ -116,21 +118,32 @@ app.listen(PORT, async () => {
   // Render instance), node-cron otherwise.
   const useQstash = !!(process.env.QSTASH_TOKEN && process.env.BACKEND_PUBLIC_URL);
 
+  // NSE blocks this server's IP (Render, US West) since 2026-11-18. The daily
+  // filings, briefs and transcript refresh run on the Mumbai VM instead
+  // (scripts/run-job.ts via cron); set NSE_JOBS_HERE=1 to run them here again.
+  const nseJobsHere = process.env.NSE_JOBS_HERE === '1';
+
   if (useQstash) {
     await Promise.all([
       registerDailyReportSchedule(),
-      registerDailyFilingsSchedule(),
       registerNewsletterSchedule(),
-      registerRefreshSchedule(),
-      registerBriefsSchedule(),
+      ...(nseJobsHere
+        ? [registerDailyFilingsSchedule(), registerRefreshSchedule(), registerBriefsSchedule()]
+        : [removeQstashSchedules(['/api/daily-filings/run', '/api/companies/refresh-all', '/api/market/briefs/run'])]),
     ]).catch(err => console.error('[qstash] schedule registration failed:', err));
-    console.log('[cron] QStash schedules active; node-cron jobs not registered');
+    console.log(`[cron] QStash schedules active; NSE jobs ${nseJobsHere ? 'here' : 'on the external runner'}`);
     return;
   }
 
   // Daily health report at 14:00 IST (08:30 UTC)
   cron.schedule('30 8 * * *', sendDailyReport, { timezone: 'UTC' });
   console.log('[cron] Daily report scheduled at 14:00 IST');
+
+  if (!nseJobsHere) {
+    console.log('[cron] NSE jobs run on the external runner; only the newsletter and daily report are scheduled here');
+    cron.schedule(parseNewsletterCron(), () => { sendWeeklyNewsletter().catch(err => console.error('[cron] Weekly newsletter failed:', err)); }, { timezone: 'UTC' });
+    return;
+  }
 
   // Daily jobs at 16:00 IST (10:30 UTC): filings, insider/deal signals, results, price reactions
   cron.schedule('30 10 * * *', async () => {

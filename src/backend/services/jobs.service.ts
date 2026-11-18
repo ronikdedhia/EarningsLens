@@ -9,6 +9,9 @@ import { getValuation, valuationLines } from './valuation.service';
 import { syncCorporateEvents, reclassifyVagueFdaEvents } from './corporate-events.service';
 import { syncShareholding } from './shareholding.service';
 import { runAnalysisCatchUp } from './analysis-catchup.service';
+import { ensurePrices } from './reactions.service';
+import { NIFTY, istDate, addDays, describeFetchError } from './nse.service';
+import { listCompanies } from './turso.service';
 
 async function send(html: string | null) {
   if (!html) return;
@@ -101,6 +104,21 @@ export function runDailyJobs(targetDate?: string): Promise<DailyJobsResult> {
       if (a.done.length) console.log('[jobs] analysis catch-up:', a.done.join(', '), `(${a.remaining} left)`);
     } catch (err) {
       console.error('[jobs] analysis catch-up failed:', err);
+    }
+
+    // Keep every company's prices current: the web server can't reach NSE, so
+    // /val and the Scorecard read what this job stores.
+    updateScrapeStage('prices', 'daily closes');
+    try {
+      const today = istDate(new Date());
+      const from = addDays(today, -730);
+      const failures: string[] = [];
+      for (const t of [NIFTY, ...(await listCompanies()).map(c => c.ticker)]) {
+        await ensurePrices(t, from, today).catch(err => failures.push(`${t}: ${describeFetchError(err)}`));
+      }
+      await send(failureNote('Price data', failures));
+    } catch (err) {
+      console.error('[jobs] prices failed:', err);
     }
 
     updateScrapeStage('reactions', 'price moves after events');

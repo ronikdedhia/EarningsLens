@@ -77,7 +77,7 @@ export async function nseGet<T = unknown>(path: string, params: Record<string, s
   } catch (err) {
     const blocked = axios.isAxiosError(err) && err.response?.status === 403;
     if (!blocked || !process.env.FIRECRAWL_API_KEY || process.env.NSE_FIRECRAWL_FALLBACK === '0') throw err;
-    const qs = new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)])).toString();
+    const qs = new URLSearchParams(Object.entries(params).map(([k, v]): [string, string] => [k, String(v)])).toString();
     return viaFirecrawl<T>(`${NSE_API}/${path}?${qs}`);
   }
 }

@@ -1,0 +1,15 @@
+name: nse-probe
+on: workflow_dispatch
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          UA='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+          curl -s ipinfo.io | grep -E '"(city|country|org)"'
+          for i in 1 2 3; do
+            curl -s -m 30 -L -o /tmp/a.json -w "announcements HTTP %{http_code} size %{size_download}\n" -A "$UA" -H "Accept: application/json" "https://www.nseindia.com/api/corporate-announcements?index=equities&symbol=SUNPHARMA&from_date=01-10-2026&to_date=18-11-2026"
+            head -c 120 /tmp/a.json; echo
+          done
+          curl -s -m 30 -L -o /dev/null -w "prices HTTP %{http_code}\n" -A "$UA" -H "Accept: application/json" "https://www.nseindia.com/api/historicalOR/generateSecurityWiseHistoricalData?from=01-11-2026&to=17-11-2026&symbol=SUNPHARMA&type=priceVolumeDeliverable&series=ALL"
+          curl -s -m 30 -L -o /dev/null -w "archive XBRL HTTP %{http_code}\n" -A "$UA" "https://nsearchives.nseindia.in/corporate/xbrl/INTEGRATED_FILING_INDAS_1747091_27102026063922_WEB.xml"

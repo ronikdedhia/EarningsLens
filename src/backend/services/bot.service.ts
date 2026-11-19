@@ -215,6 +215,15 @@ export async function registerWebhook(): Promise<void> {
   // Outbound network can be unavailable for the first seconds after a Render boot.
   for (let attempt = 1; ; attempt++) {
     try {
+      // The bot is shared with Daily Bytes, which owns the webhook and forwards
+      // EarningsLens commands here. Don't take it back unless asked to.
+      const info = await telegramApi('getWebhookInfo', {}) as { url?: string };
+      if (info?.url && new URL(info.url).host !== new URL(url).host && process.env.TELEGRAM_BOT_TAKEOVER !== '1') {
+        botStatus.webhook = `left with ${new URL(info.url).host} (forwards commands here)`;
+        botStatus.at = new Date().toISOString();
+        console.log(`[bot] webhook owned by ${new URL(info.url).host}; not replacing it`);
+        return;
+      }
       // Re-set every boot: cheap, and refreshes the secret if TELEGRAM_WEBHOOK_SECRET changed.
       await telegramApi('setWebhook', { url, secret_token: webhookSecret(), allowed_updates: ['message'], drop_pending_updates: false });
       await telegramApi('setMyCommands', { commands: COMMANDS });

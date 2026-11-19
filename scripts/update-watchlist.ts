@@ -22,7 +22,8 @@ import { deleteTickerPoints } from '../src/backend/services/qdrant.service';
 const TICKER_TABLES = [
   'quarter_index', 'sentiment_scores', 'management_scores', 'red_flags', 'guidance_promises',
   'daily_filings', 'user_companies', 'insights', 'query_log', 'price_reactions', 'price_history',
-  'quarterly_financials', 'board_meetings', 'market_signals', 'companies',
+  'quarterly_financials', 'board_meetings', 'market_signals', 'shareholding', 'order_wins', 'fda_events',
+  'companies',
 ];
 
 async function countOrDelete(table: string, tickers: string[], apply: boolean): Promise<number | string> {

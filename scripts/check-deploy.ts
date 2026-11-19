@@ -38,10 +38,16 @@ async function check(expected: string): Promise<boolean> {
     ok &&= match;
     console.log(`backend   ${match ? '✓' : '✗'} ${short(be.commit)}  started ${be.startedAt}  health=${typeof health === 'string' ? health : health.status}`);
     console.log(`          models ${JSON.stringify(be.models)}`);
-    const bot = (be.bot ?? {}) as { webhook?: string };
-    if (bot.webhook) {
-      const okBot = bot.webhook.startsWith('registered');
-      console.log(`          ${okBot ? '✓' : '✗'} telegram bot: ${bot.webhook}`);
+    // Ask Telegram itself: the server's boot-time re-registration can fail on a
+    // network blip while the webhook set earlier is still in place and working.
+    const token = process.env.TELEGRAM_ACCESS_TOKEN;
+    if (token) {
+      const info = await getJson(`https://api.telegram.org/bot${token}/getWebhookInfo`);
+      const r = (typeof info === 'string' ? {} : (info.result ?? {})) as { url?: string; pending_update_count?: number; last_error_message?: string; last_error_date?: number };
+      const recentError = r.last_error_date && Date.now() / 1000 - r.last_error_date < 86_400 ? r.last_error_message : undefined;
+      const okBot = r.url === `${BACKEND}/api/telegram/webhook` && !recentError && (r.pending_update_count ?? 0) < 5;
+      console.log(`          ${okBot ? '✓' : '✗'} telegram bot: webhook ${r.url === `${BACKEND}/api/telegram/webhook` ? 'set' : `wrong (${r.url || 'none'})`}` +
+        `, pending ${r.pending_update_count ?? '?'}${recentError ? `, last error: ${recentError}` : ''}`);
       ok &&= okBot;
     }
     const missing = Object.entries((be.configured ?? {}) as Record<string, boolean>).filter(([, v]) => !v).map(([k]) => k);

@@ -143,7 +143,7 @@ export async function handleCommand(cmd: Command): Promise<string> {
     }
 
     case 'orders': {
-      const t = await needTicker(cmd.args, companies, 'Usage: /orders PSPPROJECT');
+      const t = await needTicker(cmd.args, companies, 'Usage: /orders IONEXCHANG');
       const [orders, s] = await Promise.all([listOrders(t, addDays(today, -365)), orderSummary(t)]);
       if (!orders.length) return `No order announcements for ${escapeHtml(t)} in the last 12 months.`;
       return [

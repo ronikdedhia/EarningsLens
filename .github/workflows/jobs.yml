@@ -1,0 +1,60 @@
+# Scheduled NSE jobs. They run here because NSE blocks Render's IP (403 since
+# 2026-11-18) but answers GitHub's runners. Settings come from the encrypted
+# repository secret EARNINGSLENS_ENV (the contents of .env.local).
+#
+# GitHub may start scheduled runs several minutes late, and disables schedules
+# in a repo with no activity for 60 days; `npm run check-deploy` shows the last run.
+name: jobs
+
+on:
+  schedule:
+    - cron: '30 10 * * *'   # 16:00 IST daily
+    - cron: '30 13 * * *'   # 19:00 IST daily
+    - cron: '30 6 * * 5'    # Friday 12:00 IST
+  workflow_dispatch:
+    inputs:
+      job:
+        description: daily | evening | refresh
+        required: true
+        default: daily
+
+# Never two runs of the same job at once
+concurrency:
+  group: jobs-${{ github.event.schedule || inputs.job }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Pick job
+        id: pick
+        run: |
+          case "${{ github.event.schedule }}" in
+            '30 10 * * *') echo "job=daily"   >> "$GITHUB_OUTPUT" ;;
+            '30 13 * * *') echo "job=evening" >> "$GITHUB_OUTPUT" ;;
+            '30 6 * * 5')  echo "job=refresh" >> "$GITHUB_OUTPUT" ;;
+            *)             echo "job=${{ inputs.job }}" >> "$GITHUB_OUTPUT" ;;
+          esac
+      - name: Run ${{ steps.pick.outputs.job }}
+        env:
+          EARNINGSLENS_ENV: ${{ secrets.EARNINGSLENS_ENV }}
+          JOB_HOST_LABEL: github-actions
+        run: |
+          umask 077
+          printf '%s\n' "$EARNINGSLENS_ENV" > .env.local
+          case "${{ steps.pick.outputs.job }}" in daily|evening|refresh) ;; *) echo "unknown job"; exit 2 ;; esac
+          npx tsx scripts/run-job.ts "${{ steps.pick.outputs.job }}"
+      - name: Remove settings file
+        if: always()
+        run: rm -f .env.local

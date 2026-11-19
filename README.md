@@ -164,7 +164,7 @@ POST /api/ingest
 - Lower-scoring filings are still recorded, just without the PDF fetch — kept lightweight for routine/administrative disclosures
 - Telegram digest grouped by ticker, chunked to stay under message limits, deduped against previously-seen filings by PDF URL
 - Tracked companies are fully configurable — add or remove tickers via the `companies` table (`/api/companies`); the scraper picks up whatever is currently registered, no code change needed
-- The default watchlist lives in `src/backend/watchlist.ts` (WOCKPHARMA, IONEXCHANG, TRUALT, PSPPROJECT, MOREPENLAB, RUBICON, IVALUE, VENKEYS, SUNPHARMA). `npm run watchlist` makes the database match it.
+- The default watchlist lives in `src/backend/watchlist.ts` (WOCKPHARMA, IONEXCHANG, TRUALT, MOREPENLAB, RUBICON, IVALUE, VENKEYS, SUNPHARMA). `npm run watchlist` makes the database match it.
 - Daily job at 16:00 IST runs filings, then insider/deal signals, results, and price reactions; each step reports its own failures to Telegram
 
 ### Scorecard `/scorecard` ✦ NEW

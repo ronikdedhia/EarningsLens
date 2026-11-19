@@ -19,7 +19,6 @@ export const WATCHLIST: WatchlistCompany[] = [
     fda: { sponsors: ['WOCKHARDT'], firms: ['Wockhardt'] } },
   { ticker: 'IONEXCHANG', name: 'Ion Exchange (India) Ltd.',          sector: 'Water Treatment', bseCode: '500213' },
   { ticker: 'TRUALT',     name: 'TruAlt Bioenergy Ltd.',              sector: 'Energy',          bseCode: '544545' },
-  { ticker: 'PSPPROJECT', name: 'PSP Projects Ltd.',                  sector: 'Construction',    bseCode: '540544' },
   // Morepen makes APIs (no ANDAs in openFDA); its FDA news comes from NSE filings.
   { ticker: 'MOREPENLAB', name: 'Morepen Laboratories Ltd.',          sector: 'Pharma',          bseCode: '500288',
     fda: { sponsors: [], firms: ['Morepen'] } },
@@ -39,6 +38,8 @@ export const REMOVED_TICKERS = [
   'RPOWER', 'SAMMAANCAP', 'SHAKTIPUMP', 'MMTC',
   'HDFCBANK', 'ICICIBC', 'AXISBANK', 'KOTAKBANK', 'SBIN',
   'INFY', 'TCS', 'WIPRO', 'RELIANCE', 'BAJFINANCE',
+  // Removed on 2026-11-18
+  'PSPPROJECT',
 ];
 
 export const STATIC_BSE_CODES: Record<string, string> =

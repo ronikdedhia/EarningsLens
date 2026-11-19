@@ -26,10 +26,10 @@ const fixture = (f: string) => readFileSync(path.join(__dirname, 'fixtures', f),
 
 test('watchlist has the requested changes and no overlap with removals', () => {
   const tickers = WATCHLIST.map(c => c.ticker);
-  for (const t of ['MOREPENLAB', 'RUBICON', 'IVALUE', 'VENKEYS', 'SUNPHARMA', 'WOCKPHARMA', 'IONEXCHANG', 'TRUALT', 'PSPPROJECT']) {
+  for (const t of ['MOREPENLAB', 'RUBICON', 'IVALUE', 'VENKEYS', 'SUNPHARMA', 'WOCKPHARMA', 'IONEXCHANG', 'TRUALT']) {
     assert.ok(tickers.includes(t), t);
   }
-  for (const t of ['RPOWER', 'SAMMAANCAP', 'SHAKTIPUMP', 'MMTC', 'HDFCBANK', 'RELIANCE']) assert.ok(!tickers.includes(t), t);
+  for (const t of ['RPOWER', 'SAMMAANCAP', 'SHAKTIPUMP', 'MMTC', 'HDFCBANK', 'RELIANCE', 'PSPPROJECT']) assert.ok(!tickers.includes(t), t);
   assert.equal(REMOVED_TICKERS.filter(t => tickers.includes(t)).length, 0);
   assert.equal(STATIC_BSE_CODES.MOREPENLAB, '500288');
   assert.ok(WATCHLIST.every(c => /^\d{6}$/.test(c.bseCode)));

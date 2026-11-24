@@ -16,6 +16,7 @@
     "watchlist": "tsx scripts/update-watchlist.ts",
     "backfill": "tsx scripts/backfill.ts",
     "check-deploy": "tsx scripts/check-deploy.ts",
+    "eval": "tsx eval/run.ts",
     "test": "node --import tsx --test tests/*.test.ts",
     "typecheck": "tsc --project tsconfig.backend.json --noEmit && tsc --project tsconfig.json --noEmit"
   },
